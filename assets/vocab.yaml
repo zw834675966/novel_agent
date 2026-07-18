@@ -1,0 +1,23 @@
+visual:
+  bloodstain:
+    text: "血迹"
+    tags: ["injury", "crime"]
+  candlelight:
+    text: "烛光"
+    tags: ["indoor", "night"]
+auditory:
+  footsteps:
+    text: "脚步声"
+    tags: ["movement", "tension"]
+olfactory:
+  blood:
+    text: "血腥味"
+    tags: ["injury", "crime"]
+tactile:
+  cold:
+    text: "冰凉"
+    tags: ["weather", "fear"]
+gustatory:
+  bitter:
+    text: "苦涩"
+    tags: ["emotion", "taste"]
