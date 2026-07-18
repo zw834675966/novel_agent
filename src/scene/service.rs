@@ -9,6 +9,7 @@ use std::sync::Arc;
 const MEMORY_LIMIT: i64 = 50;
 const CONCURRENCY: usize = 4;
 
+#[derive(Clone)]
 pub struct StoryService {
     db: Db,
     vocab: Vocab,
@@ -139,40 +140,11 @@ impl StoryService {
         let participants = scene.participant_ids.clone();
         stream::iter(participants)
             .map(|cid| {
-                let svc = self.clone_refs();
+                let svc = self.clone();
                 async move { svc.derive_character(scene_id, cid).await }
             })
             .buffer_unordered(CONCURRENCY)
             .collect()
             .await
-    }
-
-    fn clone_refs(&self) -> StoryServiceRef {
-        StoryServiceRef {
-            db: self.db.clone(),
-            vocab: self.vocab.clone(),
-            generator: self.generator.clone(),
-        }
-    }
-}
-
-struct StoryServiceRef {
-    db: Db,
-    vocab: Vocab,
-    generator: Arc<dyn SenseGenerator>,
-}
-
-impl StoryServiceRef {
-    async fn derive_character(
-        &self,
-        scene_id: SceneId,
-        character_id: CharacterId,
-    ) -> Result<CharacterDerivation, StoryError> {
-        let svc = StoryService {
-            db: self.db.clone(),
-            vocab: self.vocab.clone(),
-            generator: self.generator.clone(),
-        };
-        svc.derive_character(scene_id, character_id).await
     }
 }
