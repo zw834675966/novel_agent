@@ -1,0 +1,13 @@
+[package]
+name = "novels"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.103"
+dotenv = "0.15.0"
+rig = { version = "0.40.0", features = ["derive"] }
+rig-lancedb = "0.40.0"
+schemars = "1.0.4"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
