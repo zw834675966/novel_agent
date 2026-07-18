@@ -1,4 +1,6 @@
-use crate::models::{Certainty, CharacterId, CharacterMemory, MemoryId, MemorySource, SceneId, StoryError};
+use crate::models::{
+    Certainty, CharacterId, CharacterMemory, MemoryId, MemorySource, SceneId, StoryError,
+};
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
@@ -37,9 +39,14 @@ impl MemoryRepo {
             let certainty_str: String = sqlx::Row::try_get(&r, "certainty")?;
             let created_at_str: String = sqlx::Row::try_get(&r, "created_at")?;
             out.push(CharacterMemory {
-                id: MemoryId(Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?),
+                id: MemoryId(
+                    Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?,
+                ),
                 character_id,
-                scene_id: SceneId(Uuid::parse_str(&scene_id_str).map_err(|e| StoryError::Database(e.to_string()))?),
+                scene_id: SceneId(
+                    Uuid::parse_str(&scene_id_str)
+                        .map_err(|e| StoryError::Database(e.to_string()))?,
+                ),
                 content,
                 source: serde_json::from_str(&source_str).unwrap_or(MemorySource::Witnessed),
                 certainty: serde_json::from_str(&certainty_str).unwrap_or(Certainty::Uncertain),

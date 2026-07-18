@@ -1,20 +1,20 @@
 mod character_repo;
 mod derivation_repo;
 mod memory_repo;
-mod schema;
 mod scene_repo;
+mod schema;
 mod sensation_repo;
 
 pub use character_repo::CharacterRepo;
 pub use derivation_repo::DerivationRepo;
 pub use memory_repo::MemoryRepo;
-pub use schema::migrate;
 pub use scene_repo::SceneRepo;
+pub use schema::migrate;
 pub use sensation_repo::SensationRepo;
 
+use crate::models::StoryError;
 use sqlx::sqlite::SqlitePool;
 use std::str::FromStr;
-use crate::models::StoryError;
 
 #[derive(Clone)]
 pub struct Db {
@@ -32,8 +32,8 @@ impl Db {
     }
 
     pub async fn open_in_memory() -> Result<Self, StoryError> {
-        let opts = sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")?
-            .foreign_keys(true);
+        let opts =
+            sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true);
         let pool = SqlitePool::connect_with(opts).await?;
         migrate(&pool).await?;
         Ok(Self { pool })

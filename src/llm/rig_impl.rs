@@ -31,7 +31,10 @@ impl RigSenseGenerator {
         if !req.recent_memories.is_empty() {
             s.push_str("该人物已知记忆:\n");
             for m in req.recent_memories.iter().rev() {
-                s.push_str(&format!("- [{:?}/{:?}] {}\n", m.source, m.certainty, m.content));
+                s.push_str(&format!(
+                    "- [{:?}/{:?}] {}\n",
+                    m.source, m.certainty, m.content
+                ));
             }
         }
         if let Some(last) = &req.last_sensation {

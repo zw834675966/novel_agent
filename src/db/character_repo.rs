@@ -21,13 +21,15 @@ impl CharacterRepo {
     ) -> Result<(), StoryError> {
         let now = chrono::Utc::now().to_rfc3339();
         let mut tx = self.pool.begin().await?;
-        sqlx::query("INSERT INTO characters (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
-            .bind(id.0.to_string())
-            .bind(name)
-            .bind(&now)
-            .bind(&now)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO characters (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(id.0.to_string())
+        .bind(name)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
         for t in personality {
             sqlx::query("INSERT INTO character_personality_tags (character_id, tag) VALUES (?, ?)")
                 .bind(id.0.to_string())
@@ -96,14 +98,15 @@ impl CharacterRepo {
             return Ok(None);
         };
         let name: String = sqlx::Row::try_get(&row, "name")?;
-        let personality: Vec<String> =
-            sqlx::query("SELECT tag FROM character_personality_tags WHERE character_id = ? ORDER BY tag")
-                .bind(id.0.to_string())
-                .fetch_all(&self.pool)
-                .await?
-                .iter()
-                .map(|r| sqlx::Row::try_get::<String, _>(r, "tag").unwrap_or_default())
-                .collect();
+        let personality: Vec<String> = sqlx::query(
+            "SELECT tag FROM character_personality_tags WHERE character_id = ? ORDER BY tag",
+        )
+        .bind(id.0.to_string())
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(|r| sqlx::Row::try_get::<String, _>(r, "tag").unwrap_or_default())
+        .collect();
         let skills: Vec<String> =
             sqlx::query("SELECT skill FROM character_skills WHERE character_id = ? ORDER BY skill")
                 .bind(id.0.to_string())

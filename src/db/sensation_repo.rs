@@ -9,8 +9,12 @@ pub struct SensationRepo {
 }
 
 fn ids_to_json(ids: &[VocabularyId]) -> String {
-    serde_json::to_string(&ids.iter().map(|i| i.as_str().to_string()).collect::<Vec<_>>())
-        .unwrap_or_default()
+    serde_json::to_string(
+        &ids.iter()
+            .map(|i| i.as_str().to_string())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_default()
 }
 
 fn parse_ids(s: &str) -> Vec<VocabularyId> {
@@ -54,7 +58,9 @@ impl SensationRepo {
             tactile_ids: parse_ids(&tactile),
             gustatory_ids: parse_ids(&gustatory),
         };
-        let scene_id = SceneId(Uuid::parse_str(&scene_id_str).map_err(|e| StoryError::Database(e.to_string()))?);
+        let scene_id = SceneId(
+            Uuid::parse_str(&scene_id_str).map_err(|e| StoryError::Database(e.to_string()))?,
+        );
         Ok(Some((sel, scene_id)))
     }
 

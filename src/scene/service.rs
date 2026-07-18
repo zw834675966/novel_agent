@@ -1,8 +1,6 @@
 use crate::db::Db;
 use crate::llm::{DerivationRequest, LlmCharacterDerivation, SenseGenerator};
-use crate::models::{
-    CharacterDerivation, CharacterId, CreateScene, SceneId, StoryError,
-};
+use crate::models::{CharacterDerivation, CharacterId, CreateScene, SceneId, StoryError};
 use crate::vocab::Vocab;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
@@ -34,7 +32,12 @@ impl StoryService {
         let id = SceneId(uuid::Uuid::new_v4());
         self.db
             .scenes()
-            .create(id, &input.objective_event, &input.participant_ids, input.occurred_at)
+            .create(
+                id,
+                &input.objective_event,
+                &input.participant_ids,
+                input.occurred_at,
+            )
             .await?;
         Ok(id)
     }
@@ -56,7 +59,12 @@ impl StoryService {
             .get(character_id)
             .await?
             .ok_or(StoryError::CharacterNotFound(character_id))?;
-        if !self.db.scenes().is_participant(scene_id, character_id).await? {
+        if !self
+            .db
+            .scenes()
+            .is_participant(scene_id, character_id)
+            .await?
+        {
             return Err(StoryError::NotSceneParticipant(character_id, scene_id));
         }
 

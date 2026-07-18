@@ -12,9 +12,7 @@ pub use character::Character;
 pub use derivation::CharacterDerivation;
 pub use error::StoryError;
 pub use ids::{CharacterId, MemoryId, SceneId, VocabularyId};
-pub use memory::{
-    CharacterMemory, CharacterMemoryDraft,
-};
+pub use memory::{CharacterMemory, CharacterMemoryDraft};
 pub use memory_source::{Certainty, MemorySource};
 pub use plot::{PlotDevelopment, PlotDevelopmentKind};
 pub use scene::{CreateScene, Scene};

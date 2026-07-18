@@ -1,7 +1,5 @@
-use crate::models::{
-    CharacterId, CharacterMemoryDraft, SceneId, SensorySelection, StoryError,
-};
 use crate::db::{MemoryRepo, SensationRepo};
+use crate::models::{CharacterId, CharacterMemoryDraft, SceneId, SensorySelection, StoryError};
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 

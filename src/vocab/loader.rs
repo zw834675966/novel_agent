@@ -10,10 +10,15 @@ pub struct VocabEntry {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct VocabFile {
+    #[serde(default)]
     pub visual: HashMap<String, VocabEntry>,
+    #[serde(default)]
     pub auditory: HashMap<String, VocabEntry>,
+    #[serde(default)]
     pub olfactory: HashMap<String, VocabEntry>,
+    #[serde(default)]
     pub tactile: HashMap<String, VocabEntry>,
+    #[serde(default)]
     pub gustatory: HashMap<String, VocabEntry>,
 }
 
