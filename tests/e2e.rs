@@ -1,3 +1,11 @@
+// 端到端集成测试（Mock LLM）
+// ============================
+// 使用 MockSenseGenerator 替代真实 LLM 调用。
+// 覆盖完整的"创建角色 → 创建场景 → 推导场景"流程。
+// 验证：
+//   - StoryService 能正确串联 DB 和 LLM
+//   - 推导结果能正确持久化到数据库
+
 use novels::db::Db;
 use novels::llm::{LlmCharacterDerivation, MockSenseGenerator};
 use novels::models::*;
