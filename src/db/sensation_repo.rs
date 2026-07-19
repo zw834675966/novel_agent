@@ -3,11 +3,21 @@ use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
 
+/// 五感 Repository
+/// ==================
+/// 负责 character_sensations 表的查询和插入。
+/// 五感数据以 JSON TEXT 列存储（每个感官维度一个 JSON 字符串列表）。
+///
+/// 存储格式选择因由：
+///   - 五感是 LLM 输出的结构化数据，查询模式固定（只按 character_id 取最新）
+///   - 不需要对感官 ID 做关系型查询
+///   - JSON 存储避免了多张子表的 JOIN 开销
 #[derive(Clone)]
 pub struct SensationRepo {
     pool: SqlitePool,
 }
 
+/// 将 VocabularyId 列表序列化为 JSON 字符串数组
 fn ids_to_json(ids: &[VocabularyId]) -> String {
     serde_json::to_string(
         &ids.iter()
@@ -17,12 +27,13 @@ fn ids_to_json(ids: &[VocabularyId]) -> String {
     .unwrap_or_default()
 }
 
-fn parse_ids(s: &str) -> Vec<VocabularyId> {
+/// 将 JSON 字符串数组反序列化为 VocabularyId 列表
+fn parse_ids(s: &str) -> Result<Vec<VocabularyId>, StoryError> {
     serde_json::from_str::<Vec<String>>(s)
-        .unwrap_or_default()
+        .map_err(|e| StoryError::Database(e.to_string()))?
         .into_iter()
-        .filter_map(|id| VocabularyId::new(&id).ok())
-        .collect()
+        .map(|id| VocabularyId::new(&id).map_err(|e| StoryError::Database(e.to_string())))
+        .collect::<Result<Vec<_>, StoryError>>()
 }
 
 impl SensationRepo {
@@ -30,6 +41,11 @@ impl SensationRepo {
         Self { pool }
     }
 
+    /// 获取某个角色最近一次感官选择（用于下一场景的连续性参考）
+    ///
+    /// # 返回
+    /// - `Ok(Some((SensorySelection, SceneId)))` — 最近感官 + 对应场景 ID
+    /// - `Ok(None)` — 该角色还没有感官记录
     pub async fn latest(
         &self,
         character_id: CharacterId,
@@ -52,11 +68,11 @@ impl SensationRepo {
         let tactile: String = sqlx::Row::try_get(&row, "tactile_ids_json")?;
         let gustatory: String = sqlx::Row::try_get(&row, "gustatory_ids_json")?;
         let sel = SensorySelection {
-            visual_ids: parse_ids(&visual),
-            auditory_ids: parse_ids(&auditory),
-            olfactory_ids: parse_ids(&olfactory),
-            tactile_ids: parse_ids(&tactile),
-            gustatory_ids: parse_ids(&gustatory),
+            visual_ids: parse_ids(&visual)?,
+            auditory_ids: parse_ids(&auditory)?,
+            olfactory_ids: parse_ids(&olfactory)?,
+            tactile_ids: parse_ids(&tactile)?,
+            gustatory_ids: parse_ids(&gustatory)?,
         };
         let scene_id = SceneId(
             Uuid::parse_str(&scene_id_str).map_err(|e| StoryError::Database(e.to_string()))?,
@@ -64,6 +80,7 @@ impl SensationRepo {
         Ok(Some((sel, scene_id)))
     }
 
+    /// 在已有事务中插入五感数据（供 DerivationRepo 跨表事务调用）
     pub async fn insert_in_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         character_id: CharacterId,

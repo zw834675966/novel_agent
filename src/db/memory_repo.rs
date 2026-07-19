@@ -5,6 +5,11 @@ use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
 
+/// 角色记忆 Repository
+/// =====================
+/// 负责 character_memories 表的查询和插入。
+/// 查询按 (character_id, created_at DESC) 索引高效取最近 N 条。
+/// 插入作为静态方法提供给 DerivationRepo 跨表事务复用。
 #[derive(Clone)]
 pub struct MemoryRepo {
     pool: SqlitePool,
@@ -15,6 +20,11 @@ impl MemoryRepo {
         Self { pool }
     }
 
+    /// 按角色获取最近 N 条记忆（按时间倒序）
+    ///
+    /// # 参数
+    /// - `character_id` — 角色 ID
+    /// - `limit` — 返回上限（主业务流程传 50）
     pub async fn list(
         &self,
         character_id: CharacterId,
@@ -48,8 +58,10 @@ impl MemoryRepo {
                         .map_err(|e| StoryError::Database(e.to_string()))?,
                 ),
                 content,
-                source: serde_json::from_str(&source_str).unwrap_or(MemorySource::Witnessed),
-                certainty: serde_json::from_str(&certainty_str).unwrap_or(Certainty::Uncertain),
+                source: serde_json::from_str(&source_str)
+                    .map_err(|e| StoryError::Database(e.to_string()))?,
+                certainty: serde_json::from_str(&certainty_str)
+                    .map_err(|e| StoryError::Database(e.to_string()))?,
                 created_at: DateTime::parse_from_rfc3339(&created_at_str)
                     .map_err(|e| StoryError::Database(e.to_string()))?
                     .with_timezone(&Utc),
@@ -58,6 +70,11 @@ impl MemoryRepo {
         Ok(out)
     }
 
+    /// 在已有事务中插入记忆（供 DerivationRepo 跨表事务调用）
+    ///
+    /// # 设计说明
+    /// pub(crate) 而非 pub：只允许 DerivationRepo 在事务中调用，
+    /// 不允许单独插入记忆（必须与感官数据一起写入以保持一致性）。
     pub async fn insert_in_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         character_id: CharacterId,
@@ -75,8 +92,14 @@ impl MemoryRepo {
         .bind(character_id.0.to_string())
         .bind(scene_id.0.to_string())
         .bind(content)
-        .bind(serde_json::to_string(&source).unwrap_or_default())
-        .bind(serde_json::to_string(&certainty).unwrap_or_default())
+        .bind(
+            serde_json::to_string(&source)
+                .map_err(|e| StoryError::Database(e.to_string()))?,
+        )
+        .bind(
+            serde_json::to_string(&certainty)
+                .map_err(|e| StoryError::Database(e.to_string()))?,
+        )
         .bind(now.to_rfc3339())
         .execute(&mut **tx)
         .await?;

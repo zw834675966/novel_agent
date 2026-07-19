@@ -3,6 +3,9 @@ use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
 
+/// 场景 Repository
+/// =================
+/// 负责 scenes 主表 + scene_participants 关联表的 CRUD。
 #[derive(Clone)]
 pub struct SceneRepo {
     pool: SqlitePool,
@@ -13,6 +16,7 @@ impl SceneRepo {
         Self { pool }
     }
 
+    /// 创建场景（事务内写 1 主表 + N 参与者关联）
     pub async fn create(
         &self,
         id: SceneId,
@@ -38,6 +42,7 @@ impl SceneRepo {
         Ok(())
     }
 
+    /// 按 ID 查询场景（含参与者列表，返回 None 表示不存在）
     pub async fn get(&self, id: SceneId) -> Result<Option<Scene>, StoryError> {
         let row = sqlx::query("SELECT objective_event, occurred_at FROM scenes WHERE id = ?")
             .bind(id.0.to_string())
@@ -58,10 +63,12 @@ impl SceneRepo {
                 .await?
                 .iter()
                 .map(|r| {
-                    let s: String = sqlx::Row::try_get(r, "character_id").unwrap_or_default();
-                    CharacterId(Uuid::parse_str(&s).unwrap_or_default())
+                    let s: String = sqlx::Row::try_get(r, "character_id")?;
+                    let character_id =
+                        Uuid::parse_str(&s).map_err(|e| StoryError::Database(e.to_string()))?;
+                    Ok(CharacterId(character_id))
                 })
-                .collect();
+                .collect::<Result<Vec<_>, StoryError>>()?;
         Ok(Some(Scene {
             id,
             objective_event,
@@ -70,6 +77,7 @@ impl SceneRepo {
         }))
     }
 
+    /// 检查角色是否参与某场景
     pub async fn is_participant(
         &self,
         scene_id: SceneId,
