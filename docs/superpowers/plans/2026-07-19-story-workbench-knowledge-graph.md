@@ -511,7 +511,7 @@ Run:
 npm create vite@latest web -- --template react-ts
 npm --prefix web install
 npm --prefix web install react-router-dom cytoscape
-npm --prefix web install --save-dev vitest @testing-library/react @testing-library/user-event jsdom playwright
+npm --prefix web install --save-dev vitest @testing-library/react @testing-library/user-event jsdom msw playwright
 ```
 
 Configure `vite.config.ts` with `/api` proxy target `http://127.0.0.1:3000` for development and `build.outDir: "dist"`.
