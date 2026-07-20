@@ -297,6 +297,8 @@ python tools/verify_distilled.py
 ```
 
 - `python tools/validate_fragments.py --prune` rewrites local generated files when that tool is present. Run it only with explicit approval after inspecting reported invalid entries.
+- Checks: Only when optional local tools/assets are present and the user requests distillation work, run `python tools/validate_fragments.py` and `python tools/verify_distilled.py`; exclude `--prune` because it rewrites files.
+- Boundary: Do not create, edit, delete, move, or regenerate optional local `src/bin/distill.rs`, `tools/`, `corpus/`, or `assets/distilled/` paths unless the user explicitly requests that local workflow. Preserve source-text provenance and do not treat these paths as committed baseline.
 
 ### Runtime Operations（运行操作）
 
