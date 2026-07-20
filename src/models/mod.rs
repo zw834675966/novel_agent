@@ -22,6 +22,6 @@ pub use error::StoryError;
 pub use ids::{CharacterId, MemoryId, SceneId, VocabularyId};
 pub use memory::{CharacterMemory, CharacterMemoryDraft};
 pub use memory_source::{Certainty, MemorySource};
-pub use plot::{PlotDevelopment, PlotDevelopmentKind};
+pub use plot::{PlotDevelopment, PlotDevelopmentKind, StoredPlotDevelopment};
 pub use scene::{CreateScene, Scene};
 pub use sensation::SensorySelection;

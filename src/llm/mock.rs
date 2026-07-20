@@ -1,4 +1,7 @@
-use crate::llm::{DerivationRequest, LlmCharacterDerivation, SenseGenerator};
+use crate::llm::{
+    ContextTagRequest, DerivationRequest, LlmCharacterDerivation, LlmContextTagSelection,
+    SenseGenerator,
+};
 use crate::models::StoryError;
 
 /// Mock 感官生成器（测试用）
@@ -26,5 +29,12 @@ impl SenseGenerator for MockSenseGenerator {
     /// 忽略请求上下文，直接返回预设数据
     async fn derive(&self, _req: &DerivationRequest) -> Result<LlmCharacterDerivation, StoryError> {
         Ok(self.canned.clone())
+    }
+
+    async fn select_context_tags(
+        &self,
+        _req: &ContextTagRequest,
+    ) -> Result<LlmContextTagSelection, StoryError> {
+        Ok(LlmContextTagSelection::default())
     }
 }

@@ -1,4 +1,7 @@
-use crate::llm::{DerivationRequest, LlmCharacterDerivation, SenseGenerator};
+use crate::llm::{
+    ContextTagRequest, DerivationRequest, LlmCharacterDerivation, LlmContextTagSelection,
+    SenseGenerator,
+};
 use crate::models::StoryError;
 use crate::vocab::Vocab;
 use rig::client::CompletionClient;
@@ -65,7 +68,11 @@ impl RigSenseGenerator {
         if let Some(last) = &req.last_sensation {
             s.push_str(&format!("上一场景感官: {:?}\n", last));
         }
-        let mut cands: Vec<&String> = req.candidate_ids.iter().collect();
+        let mut cands: Vec<&String> = req
+            .candidates
+            .iter()
+            .map(|candidate| &candidate.id)
+            .collect();
         cands.sort();
         s.push_str(&format!("\n候选词汇 ID: {:?}\n", cands));
         s.push_str("\n请调用 submit 提交结构化结果。sensations 各字段只能包含候选 ID。");
@@ -87,5 +94,12 @@ impl SenseGenerator for RigSenseGenerator {
             .extract(&prompt)
             .await
             .map_err(|e| StoryError::Llm(format!("{e:?}")))
+    }
+
+    async fn select_context_tags(
+        &self,
+        _req: &ContextTagRequest,
+    ) -> Result<LlmContextTagSelection, StoryError> {
+        Ok(LlmContextTagSelection::default())
     }
 }

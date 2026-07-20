@@ -1,7 +1,7 @@
 use crate::db::Db;
-use crate::llm::{DerivationRequest, LlmCharacterDerivation, SenseGenerator};
+use crate::llm::{DerivationRequest, LlmCharacterDerivation, SenseGenerator, VocabularyCandidate};
 use crate::models::{CharacterDerivation, CharacterId, CreateScene, SceneId, StoryError};
-use crate::vocab::Vocab;
+use crate::vocab::{SENSES, Vocab};
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
@@ -116,7 +116,22 @@ impl StoryService {
 
         let tags: Vec<&str> = vec![];
         let candidate_set = self.vocab.candidate_set(&tags);
-        let candidate_ids = candidate_set.clone();
+        let candidates = SENSES
+            .iter()
+            .flat_map(|sense| {
+                self.vocab
+                    .entries(sense)
+                    .into_iter()
+                    .flat_map(move |entries| {
+                        entries.iter().map(move |(key, entry)| VocabularyCandidate {
+                            id: format!("{sense}.{key}"),
+                            sense: (*sense).to_string(),
+                            text: entry.text.clone(),
+                            tags: entry.tags.clone(),
+                        })
+                    })
+            })
+            .collect();
 
         // 3. 构造请求并调用 LLM
         let req = DerivationRequest {
@@ -124,8 +139,8 @@ impl StoryService {
             scene,
             recent_memories: memories,
             last_sensation,
-            candidate_ids,
-            candidate_tags: vec![],
+            candidates,
+            prior_plot_developments: vec![],
         };
 
         let raw: LlmCharacterDerivation = self.generator.derive(&req).await?;

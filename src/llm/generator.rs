@@ -1,6 +1,23 @@
-use crate::llm::LlmCharacterDerivation;
-use crate::models::{Character, CharacterMemory, Scene, SensorySelection, StoryError};
-use std::collections::HashSet;
+use crate::llm::{LlmCharacterDerivation, LlmContextTagSelection};
+use crate::models::{
+    Character, CharacterMemory, Scene, SensorySelection, StoredPlotDevelopment, StoryError,
+};
+
+#[derive(Debug, Clone)]
+pub struct VocabularyCandidate {
+    pub id: String,
+    pub sense: String,
+    pub text: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContextTagRequest {
+    pub character: Character,
+    pub scene: Scene,
+    pub prior_plot_developments: Vec<StoredPlotDevelopment>,
+    pub available_tags: Vec<String>,
+}
 
 /// 推导请求：调用 LLM 前需要注入的全部上下文
 /// ================================================
@@ -12,8 +29,8 @@ pub struct DerivationRequest {
     pub scene: Scene,                             // 当前客观场景
     pub recent_memories: Vec<CharacterMemory>,    // 该角色最近的记忆（上限 50 条）
     pub last_sensation: Option<SensorySelection>, // 上一场景的五感（用于连续性）
-    pub candidate_ids: HashSet<String>,           // 候选词汇 ID 集合（LLM 只能从中选）
-    pub candidate_tags: Vec<String>,              // 候选标签过滤（当前未使用）
+    pub candidates: Vec<VocabularyCandidate>,
+    pub prior_plot_developments: Vec<StoredPlotDevelopment>,
 }
 
 /// 感官生成器抽象（Trait）
@@ -32,4 +49,9 @@ pub trait SenseGenerator: Send + Sync {
     /// - `Ok(LlmCharacterDerivation)` — 结构化推导结果
     /// - `Err(StoryError::Llm(...))` — LLM 调用失败
     async fn derive(&self, req: &DerivationRequest) -> Result<LlmCharacterDerivation, StoryError>;
+
+    async fn select_context_tags(
+        &self,
+        req: &ContextTagRequest,
+    ) -> Result<LlmContextTagSelection, StoryError>;
 }

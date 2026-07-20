@@ -18,3 +18,9 @@ pub struct LlmCharacterDerivation {
     pub new_memory: CharacterMemoryDraft,
     pub plot_development: Vec<PlotDevelopment>,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct LlmContextTagSelection {
+    #[serde(default)]
+    pub tags: Vec<String>,
+}

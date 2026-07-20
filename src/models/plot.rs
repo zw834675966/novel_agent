@@ -1,3 +1,5 @@
+use crate::models::{CharacterId, SceneId};
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -22,4 +24,12 @@ pub enum PlotDevelopmentKind {
 pub struct PlotDevelopment {
     pub kind: PlotDevelopmentKind, // 发展类型
     pub reason: String,            // 原因描述（LLM 生成的文本）
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPlotDevelopment {
+    pub character_id: CharacterId,
+    pub scene_id: SceneId,
+    pub development: PlotDevelopment,
+    pub created_at: DateTime<Utc>,
 }
