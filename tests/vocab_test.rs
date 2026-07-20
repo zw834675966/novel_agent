@@ -38,6 +38,40 @@ fn candidates_filter_by_tag() {
 }
 
 #[test]
+fn candidates_for_tags_include_semantic_metadata() {
+    let v = Vocab::load_from_str(sample_yaml()).unwrap();
+    let candidates = v.candidates_for_tags(&["injury".to_string()]);
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, "visual.bloodstain");
+    assert_eq!(candidates[0].sense, "visual");
+    assert_eq!(candidates[0].text, "血迹");
+    assert_eq!(candidates[0].tags, vec!["injury"]);
+}
+
+#[test]
+fn candidates_for_tags_fall_back_when_tags_have_no_entry_match() {
+    let v = Vocab::load_from_str(sample_yaml()).unwrap();
+    let candidates = v.candidates_for_tags(&["known-but-unmatched".to_string()]);
+
+    assert_eq!(candidates.len(), 2);
+}
+
+#[test]
+fn known_tags_and_filter_known_tags_are_sorted_and_deduplicated() {
+    let v = Vocab::load_from_str(sample_yaml()).unwrap();
+    let tags = [
+        "movement".to_string(),
+        "unknown".to_string(),
+        "injury".to_string(),
+        "movement".to_string(),
+    ];
+
+    assert_eq!(v.known_tags(), vec!["injury", "movement"]);
+    assert_eq!(v.filter_known_tags(&tags), vec!["injury", "movement"]);
+}
+
+#[test]
 fn validate_strips_unknown_ids() {
     // 非法 ID 应被 validate 移除，合法的保留
     let _v = Vocab::load_from_str(sample_yaml()).unwrap();

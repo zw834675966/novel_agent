@@ -1,5 +1,7 @@
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+
+use crate::llm::VocabularyCandidate;
 
 /// 词库条目
 /// ============
@@ -112,3 +114,66 @@ impl Vocab {
         set
     }
 }
+    /// Returns every vocabulary tag in stable order.
+    pub fn known_tags(&self) -> Vec<String> {
+        SENSES
+            .iter()
+            .flat_map(|sense| {
+                self.entries(sense)
+                    .into_iter()
+                    .flat_map(|entries| entries.values())
+            })
+            .flat_map(|entry| entry.tags.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Retains known tags, removing duplicates and returning stable order.
+    pub fn filter_known_tags(&self, tags: &[String]) -> Vec<String> {
+        let known = self.known_tags().into_iter().collect::<BTreeSet<_>>();
+        tags.iter()
+            .filter(|tag| known.contains(*tag))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Produces semantic candidates for selected tags, falling back to all entries on no match.
+    pub fn candidates_for_tags(&self, selected: &[String]) -> Vec<VocabularyCandidate> {
+        let matched = self.collect_candidates(Some(selected));
+        if matched.is_empty() {
+            self.collect_candidates(None)
+        } else {
+            matched
+        }
+    }
+
+    fn collect_candidates(&self, selected: Option<&[String]>) -> Vec<VocabularyCandidate> {
+        let mut candidates = Vec::new();
+
+        for sense in SENSES {
+            let Some(entries) = self.entries(sense) else {
+                continue;
+            };
+            let mut keys = entries.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+
+            for key in keys {
+                let entry = &entries[key];
+                if selected
+                    .is_none_or(|selected| entry.tags.iter().any(|tag| selected.contains(tag)))
+                {
+                    candidates.push(VocabularyCandidate {
+                        id: format!("{sense}.{key}"),
+                        sense: sense.to_string(),
+                        text: entry.text.clone(),
+                        tags: entry.tags.clone(),
+                    });
+                }
+            }
+        }
+
+        candidates
+    }

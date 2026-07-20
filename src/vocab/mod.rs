@@ -2,7 +2,7 @@
 // ==============
 // 职责：
 //   1. 从 YAML 文件加载感官词汇（Vocab）
-//   2. 根据标签过滤生成候选集（candidate_set）
+//   2. 根据标签生成语义候选集（candidates_for_tags）
 //   3. 校验 LLM 输出是否在候选集中（validate_selection）
 //
 // 为什么需要词库？
