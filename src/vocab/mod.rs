@@ -14,5 +14,5 @@
 mod loader; // YAML 加载 + VocabularyId 候选集生成
 mod validate; // LLM 输出校验（过滤非法词汇，重试检测）
 
-pub use loader::{Vocab, VocabEntry, VocabFile};
+pub use loader::{SENSES, Vocab, VocabEntry, VocabFile};
 pub use validate::{ValidationResult, validate_selection as validate};

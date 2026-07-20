@@ -72,6 +72,20 @@ fn known_tags_and_filter_known_tags_are_sorted_and_deduplicated() {
 }
 
 #[test]
+fn candidates_for_tags_fall_back_when_filter_known_tags_drops_all() {
+    // 回归测试：filter_known_tags 产出的空选择必须触发 candidates_for_tags 全量回退。
+    let v = Vocab::load_from_str(sample_yaml()).unwrap();
+    let absent = "absent-tag".to_string();
+    let filtered = v.filter_known_tags(&[absent]);
+    assert!(filtered.is_empty());
+
+    let candidates = v.candidates_for_tags(&filtered);
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].id, "visual.bloodstain");
+    assert_eq!(candidates[1].id, "auditory.footsteps");
+}
+
+#[test]
 fn validate_strips_unknown_ids() {
     // 非法 ID 应被 validate 移除，合法的保留
     let _v = Vocab::load_from_str(sample_yaml()).unwrap();

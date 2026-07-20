@@ -34,6 +34,9 @@ pub struct VocabFile {
     pub gustatory: HashMap<String, VocabEntry>, // 味觉
 }
 
+/// 全部感官类别（候选集、候选集生成与标签发现共用同一份定义，防止遗漏）
+pub const SENSES: [&str; 5] = ["visual", "auditory", "olfactory", "tactile", "gustatory"];
+
 /// 词库（已加载状态）
 /// =====================
 /// 提供按感官类别查询、按标签过滤、生成候选集等功能。
@@ -106,14 +109,14 @@ impl Vocab {
     /// 检查 LLM 输出的每个 ID 是否在候选集中。
     pub fn candidate_set(&self, tags: &[&str]) -> std::collections::HashSet<String> {
         let mut set = std::collections::HashSet::new();
-        for sense in ["visual", "auditory", "olfactory", "tactile", "gustatory"] {
+        for sense in SENSES {
             for id in self.candidates(sense, tags) {
                 set.insert(id.as_str().to_string());
             }
         }
         set
     }
-}
+
     /// Returns every vocabulary tag in stable order.
     pub fn known_tags(&self) -> Vec<String> {
         SENSES
@@ -177,3 +180,4 @@ impl Vocab {
 
         candidates
     }
+}
