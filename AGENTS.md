@@ -230,6 +230,8 @@ Owns: `src/models/` and `src/models/mod.rs`.
 - Use `CharacterId`, `SceneId`, `MemoryId`, and `VocabularyId` instead of raw IDs at public boundaries.
 - Preserve `VocabularyId` format `sense.key`; validate vocabulary identity before persistence or selection.
 - When a model changes, update affected repository serialization, service construction, LLM contract conversion, and focused tests in `tests/models_test.rs`, `tests/db_test.rs`, `tests/scene_test.rs`, or `tests/vocab_test.rs`.
+- Checks: Run `cargo test --test models_test` for typed-ID changes; run affected repository, scene, or vocabulary tests when a model change crosses those existing contracts.
+- Boundary: Do not expand model-only work into repository, service, LLM, or vocabulary changes unless an explicit user request requires the affected contract; preserve typed IDs and `VocabularyId` validation.
 
 #### Database and Repositories（数据库与仓储）
 
@@ -240,6 +242,8 @@ Owns: `src/db/schema.rs`, `src/db/*_repo.rs`, and `src/db/mod.rs`.
 - Use `DerivationRepo::insert_derivation()` for sensation plus memory writes that must remain atomic. Do not split its transaction into independent writes.
 - Keep timestamps and IDs stored as documented text values.
 - Verify with the relevant in-memory SQLite test in `tests/db_test.rs`; use `Db::open_in_memory()` for new database tests.
+- Checks: Run `cargo test --test db_test`, including `derivation_tx_atomic_on_memory_failure` when changing derivation persistence.
+- Boundary: Do not change schema, repository ownership, foreign keys, cascade behavior, or transaction boundaries outside an explicit user request; preserve atomic sensation-plus-memory writes.
 
 #### Scene Orchestration（场景推导）
 
@@ -250,6 +254,8 @@ Owns: `src/scene/service.rs` and `src/scene/mod.rs`.
 - Preserve validation-and-retry behavior: invalid LLM selections are filtered, an all-empty valid selection is retried once, and a second all-empty result returns `StoryError`.
 - `derive_scene()` limits concurrent character derivation to four; do not replace bounded concurrency with unbounded fan-out.
 - Extend `tests/scene_test.rs` for service behavior and `tests/e2e.rs` for end-to-end mock-generator flows.
+- Checks: Run `cargo test --test scene_test`; run `cargo test --test e2e` for flows spanning service, generator, validation, and persistence.
+- Boundary: Do not broaden scene orchestration into generator, repository, or vocabulary redesign without an explicit user request; preserve prerequisite validation, retry semantics, and concurrency limit of four.
 
 #### LLM Contracts and Generators（LLM 契约与生成器）
 
@@ -259,6 +265,8 @@ Owns: `src/llm/contract.rs`, `src/llm/generator.rs`, `src/llm/rig_impl.rs`, `src
 - Keep structured output types in `contract.rs` compatible with `schemars::JsonSchema` and serde derivation required by Rig extraction.
 - Do not use an OpenAI compatibility layer; production provider is `rig::providers::deepseek` and model constant is `deepseek::DEEPSEEK_V4_FLASH`.
 - When an LLM output field changes, update the contract, `DerivationRequest` context if needed, both generator implementations, validation, persistence mapping, and every fixture constructing `LlmCharacterDerivation`.
+- Checks: Run `cargo test --test scene_test` and `cargo test --test e2e` after contract or generator changes to exercise mock-backed derivation flows.
+- Boundary: Do not replace `SenseGenerator`, change provider or model selection, or alter unrelated scene, persistence, or vocabulary behavior without an explicit user request; preserve production DeepSeek wiring and deterministic mock injection.
 
 #### Vocabulary and Validation（词库与校验）
 
@@ -269,6 +277,8 @@ Owns: `assets/vocab.yaml`, `src/vocab/loader.rs`, `src/vocab/validate.rs`, and `
 - Keep YAML loading and candidate generation in `loader.rs`; keep LLM output filtering in `validate.rs`.
 - Preserve the guardrail that only vocabulary-backed selections survive validation.
 - Test parser, candidate, and invalid-selection behavior in `tests/vocab_test.rs`.
+- Checks: Run `cargo test --test vocab_test` after vocabulary loader, validation, or committed base vocabulary changes.
+- Boundary: Do not expand base-vocabulary work into optional corpus or distillation assets, generator behavior, or persistence changes without an explicit user request; preserve five senses and vocabulary-backed validation.
 
 #### Corpus Distillation（语料蒸馏）
 
