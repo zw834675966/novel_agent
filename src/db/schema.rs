@@ -73,6 +73,26 @@ CREATE TABLE IF NOT EXISTS character_sensations (
     FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sensations_character ON character_sensations(character_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS character_plot_developments (
+    id TEXT PRIMARY KEY,
+    character_id TEXT NOT NULL,
+    scene_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
+    FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_plot_developments_character_scene
+    ON character_plot_developments(character_id, scene_id);
+CREATE TABLE IF NOT EXISTS character_derivation_context_tags (
+    character_id TEXT NOT NULL,
+    scene_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (character_id, scene_id, tag),
+    FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
+    FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+);
 "#;
 
 /// 执行数据库迁移
