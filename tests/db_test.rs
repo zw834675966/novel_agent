@@ -216,6 +216,163 @@ async fn malformed_scene_participant_uuid_returns_database_error() {
     ));
 }
 
+async fn replace_for_test(
+    db: &Db,
+    character_id: CharacterId,
+    scene_id: SceneId,
+    memory: &str,
+    reason: &str,
+    tags: &[String],
+) {
+    db.derivations()
+        .replace_derivation(
+            character_id,
+            scene_id,
+            &SensorySelection {
+                visual_ids: vec![VocabularyId::new("visual.x").unwrap()],
+                ..Default::default()
+            },
+            &CharacterMemoryDraft {
+                content: memory.into(),
+                source: MemorySource::Witnessed,
+                certainty: Certainty::Certain,
+            },
+            &[PlotDevelopment {
+                kind: PlotDevelopmentKind::NewClue,
+                reason: reason.into(),
+            }],
+            tags,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn narrative_context_excludes_future_scene_state() {
+    let db = Db::open_in_memory().await.unwrap();
+    let cid = CharacterId(Uuid::new_v4());
+    let early = SceneId(Uuid::new_v4());
+    let current = SceneId(Uuid::new_v4());
+    let future = SceneId(Uuid::new_v4());
+    let t1 = Utc::now();
+    let t2 = t1 + chrono::Duration::minutes(1);
+    let t3 = t2 + chrono::Duration::minutes(1);
+    db.characters().create(cid, "A", &[], &[]).await.unwrap();
+    db.scenes()
+        .create(early, "early", &[cid], t1)
+        .await
+        .unwrap();
+    db.scenes()
+        .create(current, "current", &[cid], t2)
+        .await
+        .unwrap();
+    db.scenes()
+        .create(future, "future", &[cid], t3)
+        .await
+        .unwrap();
+    replace_for_test(&db, cid, future, "future memory", "future clue", &[]).await;
+
+    assert!(
+        db.memories()
+            .list_before_scene(cid, t2, 50)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        db.sensations()
+            .latest_before_scene(cid, t2)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        db.plots()
+            .list_before_scene(cid, t2)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn replacement_derivation_leaves_one_state_set() {
+    let db = Db::open_in_memory().await.unwrap();
+    let cid = CharacterId(Uuid::new_v4());
+    let sid = SceneId(Uuid::new_v4());
+    let at = Utc::now();
+    db.characters().create(cid, "A", &[], &[]).await.unwrap();
+    db.scenes().create(sid, "event", &[cid], at).await.unwrap();
+    replace_for_test(&db, cid, sid, "first", "first clue", &["old".into()]).await;
+    replace_for_test(&db, cid, sid, "second", "second clue", &["new".into()]).await;
+
+    assert_eq!(
+        db.memories().list(cid, 50).await.unwrap()[0].content,
+        "second"
+    );
+    assert_eq!(
+        db.sensations()
+            .latest(cid)
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .visual_ids
+            .len(),
+        1
+    );
+    assert_eq!(
+        db.plots()
+            .list_before_scene(cid, at + chrono::Duration::seconds(1))
+            .await
+            .unwrap()[0]
+            .development
+            .reason,
+        "second clue"
+    );
+    let tag_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM character_derivation_context_tags WHERE character_id = ? AND scene_id = ? AND tag = 'new'",
+    ).bind(cid.0.to_string()).bind(sid.0.to_string()).fetch_one(db.pool()).await.unwrap();
+    assert_eq!(tag_count, 1);
+}
+
+#[tokio::test]
+async fn replacement_rolls_back_without_erasing_prior_state() {
+    let db = Db::open_in_memory().await.unwrap();
+    let cid = CharacterId(Uuid::new_v4());
+    let sid = SceneId(Uuid::new_v4());
+    db.characters().create(cid, "A", &[], &[]).await.unwrap();
+    db.scenes()
+        .create(sid, "event", &[cid], Utc::now())
+        .await
+        .unwrap();
+    replace_for_test(&db, cid, sid, "first", "first clue", &[]).await;
+
+    let missing_scene = SceneId(Uuid::new_v4());
+    let result = db
+        .derivations()
+        .replace_derivation(
+            cid,
+            missing_scene,
+            &SensorySelection::default(),
+            &CharacterMemoryDraft {
+                content: "bad".into(),
+                source: MemorySource::Witnessed,
+                certainty: Certainty::Certain,
+            },
+            &[],
+            &[],
+            Utc::now(),
+        )
+        .await;
+    assert!(matches!(result, Err(StoryError::Database(_))));
+    assert_eq!(
+        db.memories().list(cid, 50).await.unwrap()[0].content,
+        "first"
+    );
+}
+
 #[tokio::test]
 async fn malformed_memory_enum_json_returns_database_error() {
     let db = Db::open_in_memory().await.unwrap();

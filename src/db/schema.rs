@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS character_sensations (
     olfactory_ids_json TEXT NOT NULL,
     tactile_ids_json TEXT NOT NULL,
     gustatory_ids_json TEXT NOT NULL,
+    emotion_ids_json TEXT NOT NULL DEFAULT '[]',
+    gesture_ids_json TEXT NOT NULL DEFAULT '[]',
+    atmosphere_ids_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
     FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
