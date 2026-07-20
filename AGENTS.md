@@ -218,7 +218,7 @@ Authoritative sources, in priority order:
 - `src/` defines current runtime behavior.
 - `tests/` defines observable regression contracts.
 - `Cargo.toml` defines supported dependencies and binary targets.
-- `assets/vocab.yaml` is the base vocabulary; `assets/distilled/*.yaml` is optional merged vocabulary material.
+- `assets/vocab.yaml` is the committed base vocabulary. Optional corpus or distillation material, if present, is local user work rather than baseline repository behavior.
 
 ### Task Playbooks（任务手册）
 
@@ -272,20 +272,21 @@ Owns: `assets/vocab.yaml`, `src/vocab/loader.rs`, `src/vocab/validate.rs`, and `
 
 #### Corpus Distillation（语料蒸馏）
 
-Owns: `src/bin/distill.rs`, `tools/extract_corpus.py`, `tools/distill_langextract.py`, `tools/validate_fragments.py`, `tools/verify_distilled.py`, `corpus/`, and `assets/distilled/`.
+Optional local assets only, possibly uncommitted: `src/bin/distill.rs`, `tools/extract_corpus.py`, `tools/distill_langextract.py`, `tools/validate_fragments.py`, `tools/verify_distilled.py`, `corpus/`, and `assets/distilled/`. They are not committed project functionality.
 
-- Treat `corpus/<book>/cNNN.txt` as source material. Never rewrite it unless the task explicitly changes corpus extraction.
-- Rust distillation requires `DEEPSEEK_API_KEY` and runs as `cargo run --bin distill -- <book> <start_chap> <end_chap>`.
-- Rust distillation writes `assets/distilled/<book>-cNNN.yaml` and skips a chapter output that already exists; do not overwrite generated material without explicit instruction.
-- Output fragments must be continuous source-text substrings after whitespace normalization. The generator locates and classifies; it must not invent or rewrite prose.
-- Validate generated entries before treating them as usable vocabulary:
+- Before editing these paths or running their commands, confirm each required path exists and get explicit user instruction.
+- If present, treat `corpus/<book>/cNNN.txt` as source material. Never rewrite it unless the task explicitly changes corpus extraction.
+- If `src/bin/distill.rs` is present and the user explicitly requests local distillation, it requires `DEEPSEEK_API_KEY` and runs as `cargo run --bin distill -- <book> <start_chap> <end_chap>`.
+- If that local tool is present, it writes `assets/distilled/<book>-cNNN.yaml` and skips a chapter output that already exists; do not overwrite generated material without explicit instruction.
+- Local output fragments must be continuous source-text substrings after whitespace normalization. The generator locates and classifies; it must not invent or rewrite prose.
+- For explicitly approved local workflows, validate generated entries before treating them as usable vocabulary:
 
 ```powershell
 python tools/validate_fragments.py
 python tools/verify_distilled.py
 ```
 
-- `python tools/validate_fragments.py --prune` rewrites generated files. Run it only with explicit approval after inspecting reported invalid entries.
+- `python tools/validate_fragments.py --prune` rewrites local generated files when that tool is present. Run it only with explicit approval after inspecting reported invalid entries.
 
 ### Runtime Operations（运行操作）
 
@@ -299,7 +300,7 @@ cargo run
 - With `DEEPSEEK_API_KEY`, it constructs `RigSenseGenerator` and calls DeepSeek.
 - Without the key, it prints a warning and uses `MockSenseGenerator`; this path must remain runnable for local development and tests.
 - `novels.db` is created or reused in the repository root.
-- Base vocabulary loads from `assets/vocab.yaml`; `assets/distilled/` is merged only when that directory exists.
+- Base vocabulary loads from `assets/vocab.yaml`.
 
 ### Quality Gates（质量门禁）
 
@@ -322,8 +323,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 - Never add `.env`, API keys, tokens, or source credentials to Git or documentation.
 - Do not infer an active LanceDB or vector-store feature solely because `rig-lancedb` appears in dependency history.
-- Do not delete, move, reformat, or regenerate `corpus/`, `assets/distilled/`, `temp/`, or unrelated worktree files without explicit user instruction.
-- Keep generated vocabulary traceable to its corpus chapter. Validate text provenance before merging or committing generated YAML.
+- Do not delete, move, reformat, or regenerate local `corpus/`, `assets/distilled/`, `temp/`, or unrelated worktree files when present without explicit user instruction.
+- Keep locally generated vocabulary traceable to its corpus chapter. Validate text provenance before merging or committing generated YAML.
 - Do not run destructive Git commands such as `git reset --hard` or `git checkout --` unless explicitly approved.
 
 ### Change Checklist（变更检查表）
@@ -341,8 +342,8 @@ Before completing a task, verify:
 
 ### Troubleshooting（故障处理）
 
-- `DEEPSEEK_API_KEY` missing during `cargo run`: expected fallback to the mock generator. During `cargo run --bin distill`, this is an error because distillation requires a real provider client.
-- Missing `assets/distilled/`: expected; main binary loads only `assets/vocab.yaml` and continues.
+- `DEEPSEEK_API_KEY` missing during `cargo run`: expected fallback to the mock generator.
+- Optional local corpus or distillation paths absent: expected on a clean checkout. If present as untracked user assets, do not edit or run them without explicit instruction.
 - Invalid or empty LLM sensory output: inspect vocabulary IDs and `validate_selection()` behavior before changing retry or persistence code.
 - Database consistency concern: inspect `src/db/derivation_repo.rs`; do not add independent sensation and memory writes around the existing transaction.
 - Windows build fails in Lance tooling before crate compilation: verify `$env:PROTOC` points to `C:\Tools\protoc\bin\protoc.exe`, then compare the failure with the known baseline before editing application code.
