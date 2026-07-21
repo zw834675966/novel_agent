@@ -10,8 +10,55 @@
 use chrono::Utc;
 use novels::db::Db;
 use novels::models::*;
-use sqlx::query;
+use sqlx::{query, sqlite::SqlitePoolOptions};
 use uuid::Uuid;
+
+#[tokio::test]
+async fn migrate_existing_sensations_table_adds_extended_dimension_columns() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    query(
+        "CREATE TABLE characters (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+         CREATE TABLE scenes (id TEXT PRIMARY KEY, objective_event TEXT NOT NULL, occurred_at TEXT NOT NULL);
+         CREATE TABLE character_sensations (
+             id TEXT PRIMARY KEY,
+             character_id TEXT NOT NULL,
+             scene_id TEXT NOT NULL,
+             visual_ids_json TEXT NOT NULL,
+             auditory_ids_json TEXT NOT NULL,
+             olfactory_ids_json TEXT NOT NULL,
+             tactile_ids_json TEXT NOT NULL,
+             gustatory_ids_json TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
+             FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+         );",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    novels::db::migrate(&pool).await.unwrap();
+    novels::db::migrate(&pool).await.unwrap();
+
+    for column in [
+        "emotion_ids_json",
+        "gesture_ids_json",
+        "atmosphere_ids_json",
+    ] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('character_sensations') WHERE name = ?",
+        )
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "missing {column}");
+    }
+}
 
 #[tokio::test]
 async fn create_and_get_character() {

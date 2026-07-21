@@ -46,7 +46,6 @@ impl RigSenseGenerator {
             vocab,
         }
     }
-
     /// 构建发送给 LLM 的 prompt
     ///
     /// prompt 包含：
@@ -57,7 +56,7 @@ impl RigSenseGenerator {
     /// - 候选词汇 ID 列表
     ///
     /// 约束：LLM 只能从候选词汇 ID 中选择，不得自行造词。
-    fn build_derivation_prompt(&self, req: &DerivationRequest) -> String {
+    fn build_derivation_prompt(req: &DerivationRequest) -> String {
         let mut s = String::new();
         s.push_str("你是小说人物视角推导器。只从候选词汇 ID 中选择，不得造词。\n\n");
         s.push_str(&format!(
@@ -65,15 +64,7 @@ impl RigSenseGenerator {
             req.character.name, req.character.personality, req.character.skills
         ));
         s.push_str(&format!("客观事件: {}\n", req.scene.objective_event));
-        if !req.prior_plot_developments.is_empty() {
-            s.push_str("此前剧情发展:\n");
-            for plot in &req.prior_plot_developments {
-                s.push_str(&format!(
-                    "- kind: {:?} | reason: {}\n",
-                    plot.development.kind, plot.development.reason
-                ));
-            }
-        }
+        Self::append_prior_plots(&mut s, &req.prior_plot_developments);
         if !req.recent_memories.is_empty() {
             s.push_str("该人物已知记忆:\n");
             for m in req.recent_memories.iter().rev() {
@@ -104,7 +95,7 @@ impl RigSenseGenerator {
         s
     }
 
-    fn build_tag_prompt(&self, req: &ContextTagRequest) -> String {
+    fn build_tag_prompt(req: &ContextTagRequest) -> String {
         let mut available_tags = req.available_tags.clone();
         available_tags.sort();
         available_tags.dedup();
@@ -116,21 +107,27 @@ impl RigSenseGenerator {
             req.character.name, req.character.personality, req.character.skills
         ));
         s.push_str(&format!("客观事件: {}\n", req.scene.objective_event));
-        if !req.prior_plot_developments.is_empty() {
-            s.push_str("此前剧情发展:\n");
-            for plot in &req.prior_plot_developments {
-                s.push_str(&format!(
-                    "- kind: {:?} | reason: {}\n",
-                    plot.development.kind, plot.development.reason
-                ));
-            }
-        }
+        Self::append_prior_plots(&mut s, &req.prior_plot_developments);
         s.push_str(&format!(
             "可用标签（只能从此列表选择）: {:?}\n",
             available_tags
         ));
         s.push_str("请调用 submit 提交结构化结果，tags 只能包含可用标签中的值。");
         s
+    }
+
+    fn append_prior_plots(s: &mut String, plots: &[crate::models::StoredPlotDevelopment]) {
+        if plots.is_empty() {
+            return;
+        }
+
+        s.push_str("此前剧情发展:\n");
+        for plot in plots.iter().rev() {
+            s.push_str(&format!(
+                "- kind: {:?} | reason: {}\n",
+                plot.development.kind, plot.development.reason
+            ));
+        }
     }
 }
 
@@ -143,7 +140,7 @@ impl SenseGenerator for RigSenseGenerator {
     /// 2. 调用 rig Extractor::extract()
     /// 3. 将错误转换为 StoryError::Llm
     async fn derive(&self, req: &DerivationRequest) -> Result<LlmCharacterDerivation, StoryError> {
-        let prompt = self.build_derivation_prompt(req);
+        let prompt = Self::build_derivation_prompt(req);
         self.derivation_extractor
             .extract(&prompt)
             .await
@@ -154,10 +151,75 @@ impl SenseGenerator for RigSenseGenerator {
         &self,
         req: &ContextTagRequest,
     ) -> Result<LlmContextTagSelection, StoryError> {
-        let prompt = self.build_tag_prompt(req);
+        let prompt = Self::build_tag_prompt(req);
         self.tag_extractor
             .extract(&prompt)
             .await
             .map_err(|e| StoryError::Llm(format!("{e:?}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{
+        Character, CharacterId, PlotDevelopment, PlotDevelopmentKind, Scene, SceneId,
+        StoredPlotDevelopment,
+    };
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    #[test]
+    fn prompts_list_prior_plots_oldest_first() {
+        let character_id = CharacterId(Uuid::new_v4());
+        let scene_id = SceneId(Uuid::new_v4());
+        let older = StoredPlotDevelopment {
+            character_id,
+            scene_id,
+            development: PlotDevelopment {
+                kind: PlotDevelopmentKind::NewClue,
+                reason: "older plot".into(),
+            },
+            created_at: Utc::now(),
+        };
+        let newer = StoredPlotDevelopment {
+            character_id,
+            scene_id,
+            development: PlotDevelopment {
+                kind: PlotDevelopmentKind::ConflictEscalated,
+                reason: "newer plot".into(),
+            },
+            created_at: Utc::now(),
+        };
+        let request = DerivationRequest {
+            character: Character {
+                id: character_id,
+                name: "A".into(),
+                personality: vec![],
+                skills: vec![],
+            },
+            scene: Scene {
+                id: scene_id,
+                objective_event: "event".into(),
+                participant_ids: vec![character_id],
+                occurred_at: Utc::now(),
+            },
+            recent_memories: vec![],
+            last_sensation: None,
+            candidates: vec![],
+            prior_plot_developments: vec![newer, older],
+        };
+
+        let derivation_prompt = RigSenseGenerator::build_derivation_prompt(&request);
+        let tag_prompt = RigSenseGenerator::build_tag_prompt(&ContextTagRequest {
+            character: request.character.clone(),
+            scene: request.scene.clone(),
+            prior_plot_developments: request.prior_plot_developments.clone(),
+            available_tags: vec![],
+        });
+
+        for prompt in [derivation_prompt, tag_prompt] {
+            assert!(prompt.find("older plot").unwrap() < prompt.find("newer plot").unwrap());
+        }
     }
 }
