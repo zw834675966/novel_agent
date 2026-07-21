@@ -9,7 +9,10 @@
 //   6. 创建角色 + 场景 + 推导演示
 
 use novels::db::Db;
-use novels::llm::{LlmCharacterDerivation, MockSenseGenerator, RigSenseGenerator, SenseGenerator};
+use novels::llm::{
+    LlmCharacterDerivation, LlmContextTagSelection, MockSenseGenerator, RigSenseGenerator,
+    SenseGenerator,
+};
 use novels::models::*;
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
@@ -34,15 +37,18 @@ async fn main() -> anyhow::Result<()> {
         Ok(client) => Arc::new(RigSenseGenerator::new(client, vocab.clone())),
         Err(_) => {
             eprintln!("DEEPSEEK_API_KEY not set, using mock generator");
-            Arc::new(MockSenseGenerator::new(LlmCharacterDerivation {
-                sensations: SensorySelection::default(),
-                new_memory: CharacterMemoryDraft {
-                    content: "mock".into(),
-                    source: MemorySource::Witnessed,
-                    certainty: Certainty::Certain,
+            Arc::new(MockSenseGenerator::new(
+                LlmContextTagSelection::default(),
+                LlmCharacterDerivation {
+                    sensations: SensorySelection::default(),
+                    new_memory: CharacterMemoryDraft {
+                        content: "mock".into(),
+                        source: MemorySource::Witnessed,
+                        certainty: Certainty::Certain,
+                    },
+                    plot_development: vec![],
                 },
-                plot_development: vec![],
-            }))
+            ))
         }
     };
 

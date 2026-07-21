@@ -6,7 +6,10 @@
 //   - derive_scene：部分角色失败时的容错
 
 use novels::db::Db;
-use novels::llm::{DerivationRequest, LlmCharacterDerivation, MockSenseGenerator, SenseGenerator};
+use novels::llm::{
+    ContextTagRequest, DerivationRequest, LlmCharacterDerivation, LlmContextTagSelection,
+    MockSenseGenerator, SenseGenerator,
+};
 use novels::models::*;
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
@@ -20,6 +23,31 @@ struct SequenceGenerator {
 
 struct OneFailureGenerator {
     failing_character: CharacterId,
+}
+
+/// Test-only generator that records every `ContextTagRequest` and
+/// `DerivationRequest` it receives, then returns a fixed tag selection
+/// followed by a fixed derivation. Used to assert that the semantic
+/// vocabulary candidate metadata flows unchanged into the LLM prompt.
+struct RecordingGenerator {
+    last_tag_request: Mutex<Option<ContextTagRequest>>,
+    last_derivation_request: Mutex<Option<DerivationRequest>>,
+    tag_response: LlmContextTagSelection,
+    derivation_response: LlmCharacterDerivation,
+}
+
+impl RecordingGenerator {
+    fn new(
+        tag_response: LlmContextTagSelection,
+        derivation_response: LlmCharacterDerivation,
+    ) -> Self {
+        Self {
+            last_tag_request: Mutex::new(None),
+            last_derivation_request: Mutex::new(None),
+            tag_response,
+            derivation_response,
+        }
+    }
 }
 
 impl SequenceGenerator {
@@ -39,6 +67,13 @@ impl SenseGenerator for OneFailureGenerator {
             Ok(canned_derivation())
         }
     }
+
+    async fn select_context_tags(
+        &self,
+        _req: &ContextTagRequest,
+    ) -> Result<LlmContextTagSelection, StoryError> {
+        Ok(LlmContextTagSelection::default())
+    }
 }
 
 #[async_trait::async_trait]
@@ -49,6 +84,29 @@ impl SenseGenerator for SequenceGenerator {
             .await
             .pop_front()
             .ok_or_else(|| StoryError::Llm("no response configured".into()))
+    }
+
+    async fn select_context_tags(
+        &self,
+        _req: &ContextTagRequest,
+    ) -> Result<LlmContextTagSelection, StoryError> {
+        Ok(LlmContextTagSelection::default())
+    }
+}
+
+#[async_trait::async_trait]
+impl SenseGenerator for RecordingGenerator {
+    async fn derive(&self, req: &DerivationRequest) -> Result<LlmCharacterDerivation, StoryError> {
+        *self.last_derivation_request.lock().await = Some(req.clone());
+        Ok(self.derivation_response.clone())
+    }
+
+    async fn select_context_tags(
+        &self,
+        req: &ContextTagRequest,
+    ) -> Result<LlmContextTagSelection, StoryError> {
+        *self.last_tag_request.lock().await = Some(req.clone());
+        Ok(self.tag_response.clone())
     }
 }
 
@@ -73,7 +131,10 @@ async fn derive_character_persists_and_returns() {
     let db = Db::open_in_memory().await.unwrap();
     let yaml = "visual:\n  x:\n    text: x\n    tags: []\n";
     let vocab = Vocab::load_from_str(yaml).unwrap();
-    let generator = Arc::new(MockSenseGenerator::new(canned_derivation()));
+    let generator = Arc::new(MockSenseGenerator::new(
+        LlmContextTagSelection::default(),
+        canned_derivation(),
+    ));
     let svc = StoryService::new(db.clone(), vocab, generator);
 
     let cid = CharacterId(uuid::Uuid::new_v4());
@@ -101,7 +162,10 @@ async fn derive_character_rejects_non_participant() {
     // 非参与者推导应返回 NotSceneParticipant 错误
     let db = Db::open_in_memory().await.unwrap();
     let vocab = Vocab::load_from_str("visual:\n  x:\n    text: x\n    tags: []\n").unwrap();
-    let generator = Arc::new(MockSenseGenerator::new(canned_derivation()));
+    let generator = Arc::new(MockSenseGenerator::new(
+        LlmContextTagSelection::default(),
+        canned_derivation(),
+    ));
     let svc = StoryService::new(db.clone(), vocab, generator);
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
@@ -238,4 +302,72 @@ async fn retry_rejects_two_invalid_responses_without_persisting() {
     assert!(matches!(error, StoryError::InvalidVocabularySelection(_)));
     assert!(db.memories().list(cid, 50).await.unwrap().is_empty());
     assert!(db.sensations().latest(cid).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn derivation_passes_semantic_vocabulary_candidates() {
+    // The derivation request that reaches the LLM must carry full semantic
+    // candidate metadata (id / sense / text / tags) so the model can reason
+    // over text rather than opaque IDs. It also asserts that the available
+    // tag list supplied by the service reaches `select_context_tags`.
+    let db = Db::open_in_memory().await.unwrap();
+    let yaml = "visual:\n  bloodstain:\n    text: 血迹\n    tags: [\"injury\"]\n";
+    let vocab = Vocab::load_from_str(yaml).unwrap();
+
+    let derivation = LlmCharacterDerivation {
+        sensations: SensorySelection {
+            visual_ids: vec![VocabularyId::new("visual.bloodstain").unwrap()],
+            ..Default::default()
+        },
+        new_memory: CharacterMemoryDraft {
+            content: "saw blood".into(),
+            source: MemorySource::Witnessed,
+            certainty: Certainty::Certain,
+        },
+        plot_development: vec![],
+    };
+    let tag_selection = LlmContextTagSelection {
+        tags: vec!["injury".into()],
+    };
+    let generator = Arc::new(RecordingGenerator::new(tag_selection, derivation));
+    let svc = StoryService::new(db.clone(), vocab, generator.clone());
+
+    let cid = CharacterId(uuid::Uuid::new_v4());
+    let sid = SceneId(uuid::Uuid::new_v4());
+    db.characters()
+        .create(cid, "侦探", &["谨慎".to_string()], &["推理".to_string()])
+        .await
+        .unwrap();
+    db.scenes()
+        .create(sid, "古宅发现一具尸体", &[cid], chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let result = svc.derive_character(sid, cid).await.unwrap();
+    assert_eq!(result.character_id, cid);
+    assert_eq!(result.scene_id, sid);
+
+    let tag_request = generator
+        .last_tag_request
+        .lock()
+        .await
+        .clone()
+        .expect("select_context_tags was not invoked");
+    assert_eq!(
+        tag_request.available_tags,
+        vec!["injury".to_string()],
+        "available_tags must include every known vocab tag in stable order"
+    );
+
+    let request = generator
+        .last_derivation_request
+        .lock()
+        .await
+        .clone()
+        .expect("derive was not invoked");
+    assert!(!request.candidates.is_empty());
+    assert_eq!(request.candidates[0].id, "visual.bloodstain");
+    assert_eq!(request.candidates[0].sense, "visual");
+    assert_eq!(request.candidates[0].text, "血迹");
+    assert_eq!(request.candidates[0].tags, vec!["injury"]);
 }
