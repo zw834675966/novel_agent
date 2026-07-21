@@ -369,7 +369,7 @@ impl StoryService {
             .iter()
             .map(|id| id.0.to_string())
             .collect();
-        AssembledProse::assemble(&narrative, &self.vocab, derivations, &participants)
+        AssembledProse::assemble(&narrative, &self.vocab, &req.derivations, &participants)
     }
 }
 

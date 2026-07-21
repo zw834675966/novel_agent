@@ -29,13 +29,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 初始化底层依赖
     let db = Db::open("novels.db").await?;
-    let mut vocab = Vocab::load_from_path(std::path::Path::new("assets/vocab.yaml"))?;
-    // 叠加蒸馏素材库(assets/distilled/*.yaml,不存在则跳过)
-    let distilled_dir = std::path::Path::new("assets/distilled");
-    if distilled_dir.is_dir() {
-        let n = vocab.load_dir_merged(distilled_dir)?;
-        eprintln!("loaded {n} distilled vocab files");
-    }
+    let vocab = Vocab::load_from_path(std::path::Path::new("assets/vocab.yaml"))?;
 
     // 初始化 LLM 生成器
     // rig::providers::deepseek::Client::from_env() 从 DEEPSEEK_API_KEY 环境变量创建客户端

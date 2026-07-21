@@ -1,15 +1,11 @@
-use std::collections::HashSet;
-
 use rig::client::CompletionClient;
 use rig::extractor::Extractor;
 use rig::providers::deepseek;
 
-use crate::models::{CharacterDerivation, StoryError};
-use crate::vocab::Vocab;
+use crate::models::StoryError;
 
-use super::assembly::candidate_refs_for;
 use super::contract::LlmNarrative;
-use super::generator::{CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator};
+use super::generator::{NarrateRequest, ProseGenerator};
 
 /// rig(DeepSeek)生产实现
 /// ========================
@@ -110,49 +106,11 @@ fn build_prompt(req: &NarrateRequest) -> String {
     s
 }
 
-/// 从 derivations 构造每角色的语义候选引用(供 NarrateRequest 使用)
-///
-/// 需要词库以解析每个 VocabularyId 的 text/tags/sense。
-#[allow(dead_code)]
-pub fn build_candidate_refs(
-    derivations: &[CharacterDerivation],
-    vocab: &Vocab,
-) -> Vec<CharacterProseCandidates> {
-    derivations
-        .iter()
-        .map(|d| {
-            let ids = candidate_refs_for(d);
-            let candidates = ids
-                .iter()
-                .filter_map(|raw| {
-                    let vid = crate::models::VocabularyId::new(raw).ok()?;
-                    let entry = vocab.entries(vid.sense())?.get(vid.key())?;
-                    Some(ProseCandidate {
-                        id: raw.to_string(),
-                        sense: vid.sense().to_string(),
-                        text: entry.text.clone(),
-                        tags: entry.tags.clone(),
-                    })
-                })
-                .collect::<Vec<_>>();
-            CharacterProseCandidates {
-                character_id: d.character_id,
-                candidates,
-            }
-        })
-        .collect()
-}
-
-/// 参与者 ID 集合(供 assemble 校验 pov)
-#[allow(dead_code)]
-pub fn participant_set(participants: &[crate::models::CharacterId]) -> HashSet<String> {
-    participants.iter().map(|id| id.0.to_string()).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{Character, CharacterId, Scene, SceneId};
+    use crate::prose::{CharacterProseCandidates, ProseCandidate};
     use chrono::Utc;
     use uuid::Uuid;
 

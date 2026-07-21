@@ -11,7 +11,7 @@
 //   ProseCandidate / CharacterProseCandidates / ProseGenerator /
 //   MockProseGenerator / AssembledProse。
 // crate 私有:assemble(以 AssembledProse::assemble 关联函数暴露)、
-//   candidate_refs_for、build_candidate_refs、participant_set。
+//   candidate_refs_for。
 
 mod assembly; // 按 ID 拉取片段 + 按类别拼装正文 + ref 校验
 mod contract; // LlmNarrative / NarrativeBeat(JsonSchema)
@@ -25,8 +25,6 @@ pub use generator::{CharacterProseCandidates, NarrateRequest, ProseCandidate, Pr
 pub use mock::MockProseGenerator;
 pub use rig_impl::RigProseGenerator;
 
-// crate 私有重导出:供 StoryService / rig_impl 跨模块调用,不对外暴露
+// crate 私有重导出:供 StoryService 跨模块调用,不对外暴露
 #[allow(unused_imports)]
 pub(crate) use assembly::candidate_refs_for;
-#[allow(unused_imports)]
-pub(crate) use rig_impl::{build_candidate_refs, participant_set};
