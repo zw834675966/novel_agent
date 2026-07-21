@@ -1,9 +1,13 @@
 use crate::db::Db;
 use crate::llm::{ContextTagRequest, DerivationRequest, LlmCharacterDerivation, SenseGenerator};
 use crate::models::{CharacterDerivation, CharacterId, CreateScene, SceneId, StoryError};
+use crate::prose::{
+    AssembledProse, CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator,
+};
 use crate::vocab::Vocab;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// 历史记忆上限：传给 LLM 的最近记忆条数
@@ -17,21 +21,29 @@ const CONCURRENCY: usize = 4;
 ///   - 场景创建
 ///   - 单角色推导
 ///   - 全场景推导（并发处理所有参与角色）
+///   - 场景叙事编排（结构化推导 -> 小说正文）
 ///
 /// Clone 是廉价的（内部场都是 Arc/Clone 类型）。
 #[derive(Clone)]
 pub struct StoryService {
-    db: Db,                             // 数据库句柄
-    vocab: Vocab,                       // 感官词库（用于候选集校验）
-    generator: Arc<dyn SenseGenerator>, // LLM 推导引擎（生产用 rig / 测试用 mock）
+    db: Db,                                   // 数据库句柄
+    vocab: Vocab,                             // 感官词库（候选集校验 + 叙事拼装）
+    sense_generator: Arc<dyn SenseGenerator>, // 感官/记忆 LLM 推导引擎
+    prose_generator: Arc<dyn ProseGenerator>, // 叙事编排 LLM 引擎
 }
 
 impl StoryService {
-    pub fn new(db: Db, vocab: Vocab, generator: Arc<dyn SenseGenerator>) -> Self {
+    pub fn new(
+        db: Db,
+        vocab: Vocab,
+        sense_generator: Arc<dyn SenseGenerator>,
+        prose_generator: Arc<dyn ProseGenerator>,
+    ) -> Self {
         Self {
             db,
             vocab,
-            generator,
+            sense_generator,
+            prose_generator,
         }
     }
 
@@ -43,10 +55,10 @@ impl StoryService {
     /// 创建一个新场景
     ///
     /// # 参数
-    /// - `input` — 场景创建请求（客观事件 + 参与者 + 时间）
+    /// - `input` - 场景创建请求（客观事件 + 参与者 + 时间）
     ///
     /// # 返回
-    /// - `Ok(SceneId)` — 新生成的场景 UUID
+    /// - `Ok(SceneId)` - 新生成的场景 UUID
     pub async fn create_scene(&self, input: CreateScene) -> Result<SceneId, StoryError> {
         let id = SceneId(uuid::Uuid::new_v4());
         self.db
@@ -73,11 +85,11 @@ impl StoryService {
     /// 7. 原子写入感官 + 新记忆
     ///
     /// # 错误
-    /// - `SceneNotFound` — 场景不存在
-    /// - `CharacterNotFound` — 角色不存在
-    /// - `NotSceneParticipant` — 角色未参与该场景
-    /// - `InvalidVocabularySelection` — LLM 两次返回都选了非法词汇
-    /// - `Llm(...)` — LLM 调用失败
+    /// - `SceneNotFound` - 场景不存在
+    /// - `CharacterNotFound` - 角色不存在
+    /// - `NotSceneParticipant` - 角色未参与该场景
+    /// - `InvalidVocabularySelection` - LLM 两次返回都选了非法词汇
+    /// - `Llm(...)` - LLM 调用失败
     pub async fn derive_character(
         &self,
         scene_id: SceneId,
@@ -123,7 +135,7 @@ impl StoryService {
             .list_before_scene(character_id, scene.occurred_at)
             .await?;
         let raw_tags = self
-            .generator
+            .sense_generator
             .select_context_tags(&ContextTagRequest {
                 character: character.clone(),
                 scene: scene.clone(),
@@ -148,7 +160,7 @@ impl StoryService {
             prior_plot_developments,
         };
 
-        let raw: LlmCharacterDerivation = self.generator.derive(&req).await?;
+        let raw: LlmCharacterDerivation = self.sense_generator.derive(&req).await?;
 
         // 4. 校验 LLM 输出的词汇是否在候选集中
         //    如果全部为空（LLM 选的词全非法），自动重试一次
@@ -181,9 +193,9 @@ impl StoryService {
     /// 校验 LLM 感官输出，全部非法时自动重试
     ///
     /// # 重试策略
-    /// - 第一次调用 v1：校验 → 存在合法词汇 → 直接返回清理后结果
-    /// - 第一次调用 v1：校验 → 全部非法 → 重新调用 LLM
-    /// - 第二次调用 v2：校验 → 还是全部非法 → 返回错误
+    /// - 第一次调用 v1：校验 -> 存在合法词汇 -> 直接返回清理后结果
+    /// - 第一次调用 v1：校验 -> 全部非法 -> 重新调用 LLM
+    /// - 第二次调用 v2：校验 -> 还是全部非法 -> 返回错误
     ///
     /// 这种设计平衡了 LLM "偶尔跑偏"的概率和重试成本。
     async fn validate_with_retry(
@@ -196,7 +208,7 @@ impl StoryService {
         if !v1.all_empty {
             return Ok((raw, v1.cleaned));
         }
-        let raw2 = self.generator.derive(req).await?;
+        let raw2 = self.sense_generator.derive(req).await?;
         let v2 = crate::vocab::validate(&raw2.sensations, candidate_set);
         if v2.all_empty {
             return Err(StoryError::InvalidVocabularySelection(
@@ -215,8 +227,8 @@ impl StoryService {
     ///   不会因为一个角色失败而阻塞其他角色
     ///
     /// # 错误处理
-    /// - 场景不存在 → 返回单元素 Vec [Err]
-    /// - 部分角色失败 → 返回混合结果（Ok + Err 混合）
+    /// - 场景不存在 -> 返回单元素 Vec [Err]
+    /// - 部分角色失败 -> 返回混合结果（Ok + Err 混合）
     pub async fn derive_scene(
         &self,
         scene_id: SceneId,
@@ -236,4 +248,160 @@ impl StoryService {
             .collect()
             .await
     }
+
+    /// 把场景的结构化推导结果编排成小说正文
+    ///
+    /// # 流程
+    /// 1. 取场景客观事件与参与者
+    /// 2. 校验所有 derivation:scene_id 匹配、角色为参与者、无重复角色
+    /// 3. 加载全部参与者 Character
+    /// 4. 从 service-owned Vocab 构造每角色的候选片段元数据(只含当前可解析的 ID)
+    /// 5. 排序 characters / derivations / 候选组 / 候选 / tags 后构造 NarrateRequest
+    /// 6. 调用 service-owned ProseGenerator 产出 LlmNarrative
+    /// 7. 调用内部 assembly 拼装正文 + 校验 ref
+    ///
+    /// # 防AI化
+    /// LLM 只写 action(叙事骨架),描写一律通过 ref 拉取原文;
+    /// 非 pov 参与者的 beat 被拒,非法 ref 被剥离。
+    ///
+    /// # 错误
+    /// - `SceneNotFound` - 场景不存在
+    /// - `InvalidNarrationContext` - derivation scene_id 不匹配 / 非参与者角色 / 重复角色
+    /// - `CharacterNotFound` - 参与者角色不存在
+    /// - `Llm(...)` - LLM 调用失败或返回空 narrative
+    pub async fn narrate_scene(
+        &self,
+        scene_id: SceneId,
+        derivations: &[CharacterDerivation],
+    ) -> Result<AssembledProse, StoryError> {
+        // 1. 加载场景
+        let scene = self
+            .db
+            .scenes()
+            .get(scene_id)
+            .await?
+            .ok_or(StoryError::SceneNotFound(scene_id))?;
+
+        // 2. 校验 derivation 上下文
+        //    - 每个 derivation 的 scene_id 必须等于请求的 scene_id
+        //    - 每个 derivation 的角色必须是场景参与者
+        //    - 不允许重复角色的 derivation
+        let participant_set: HashSet<CharacterId> = scene.participant_ids.iter().copied().collect();
+        let mut seen: HashSet<CharacterId> = HashSet::new();
+        for d in derivations {
+            if d.scene_id != scene_id {
+                return Err(StoryError::InvalidNarrationContext(format!(
+                    "derivation for character {:?} belongs to scene {:?}, not {:?}",
+                    d.character_id, d.scene_id, scene_id
+                )));
+            }
+            if !participant_set.contains(&d.character_id) {
+                return Err(StoryError::InvalidNarrationContext(format!(
+                    "character {:?} is not a participant of scene {:?}",
+                    d.character_id, scene_id
+                )));
+            }
+            if !seen.insert(d.character_id) {
+                return Err(StoryError::InvalidNarrationContext(format!(
+                    "duplicate derivation for character {:?}",
+                    d.character_id
+                )));
+            }
+        }
+
+        // 3. 加载全部参与者 Character(必须全部存在,否则 CharacterNotFound)
+        let mut characters: Vec<crate::models::Character> =
+            Vec::with_capacity(scene.participant_ids.len());
+        for cid in &scene.participant_ids {
+            let c = self
+                .db
+                .characters()
+                .get(*cid)
+                .await?
+                .ok_or(StoryError::CharacterNotFound(*cid))?;
+            characters.push(c);
+        }
+
+        // 4. 从 service-owned Vocab 构造候选元数据
+        //    只保留(a)出现在 derivation 候选集中 (b)当前 Vocab 能解析 的 ID。
+        let candidates = build_candidate_refs(derivations, &self.vocab);
+
+        // 5. 排序保证 prompt 稳定:
+        //    - characters 按 CharacterId(Uuid) 升序
+        //    - derivations 按 character_id 升序
+        //    - candidate groups 按 character_id 升序
+        //    - 组内候选按 SENSES 顺序 + id 升序
+        //    - tags 字典序
+        characters.sort_by_key(|c| c.id.0);
+        let mut sorted_derivations = derivations.to_vec();
+        sorted_derivations.sort_by_key(|d| d.character_id.0);
+        let mut sorted_candidates = candidates;
+        sorted_candidates.sort_by_key(|g| g.character_id.0);
+        for group in &mut sorted_candidates {
+            group.candidates.sort_by(|a, b| {
+                let sa = crate::vocab::SENSES
+                    .iter()
+                    .position(|s| *s == a.sense)
+                    .unwrap_or(usize::MAX);
+                let sb = crate::vocab::SENSES
+                    .iter()
+                    .position(|s| *s == b.sense)
+                    .unwrap_or(usize::MAX);
+                sa.cmp(&sb).then_with(|| a.id.cmp(&b.id))
+            });
+            for cand in &mut group.candidates {
+                cand.tags.sort();
+            }
+        }
+
+        // 6. 构造语义请求并调用 LLM
+        let req = NarrateRequest {
+            scene: scene.clone(),
+            characters,
+            derivations: sorted_derivations,
+            candidates: sorted_candidates,
+        };
+        let narrative = self.prose_generator.narrate(&req).await?;
+
+        // 7. 拼装正文 + ref 校验
+        let participants: HashSet<String> = scene
+            .participant_ids
+            .iter()
+            .map(|id| id.0.to_string())
+            .collect();
+        AssembledProse::assemble(&narrative, &self.vocab, derivations, &participants)
+    }
+}
+
+/// 从 derivations 构造每角色的语义候选引用(供 NarrateRequest 使用)
+///
+/// 需要词库以解析每个 VocabularyId 的 text/tags/sense。
+/// 只保留当前 Vocab 能解析的 ID。
+fn build_candidate_refs(
+    derivations: &[CharacterDerivation],
+    vocab: &Vocab,
+) -> Vec<CharacterProseCandidates> {
+    derivations
+        .iter()
+        .map(|d| {
+            let ids = crate::prose::candidate_refs_for(d);
+            let candidates = ids
+                .iter()
+                .filter_map(|raw| {
+                    let vid = crate::models::VocabularyId::new(raw).ok()?;
+                    let entry = vocab.entries(vid.sense())?.get(vid.key())?;
+                    Some(ProseCandidate {
+                        id: raw.to_string(),
+                        sense: vid.sense().to_string(),
+                        text: entry.text.clone(),
+                        tags: entry.tags.clone(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            CharacterProseCandidates {
+                character_id: d.character_id,
+                candidates,
+            }
+        })
+        .collect()
 }

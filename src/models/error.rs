@@ -22,6 +22,9 @@ pub enum StoryError {
     #[error("invalid vocabulary selection: {0}")]
     InvalidVocabularySelection(String),
 
+    #[error("invalid narration context: {0}")]
+    InvalidNarrationContext(String),
+
     #[error("llm error: {0}")]
     Llm(String),
 

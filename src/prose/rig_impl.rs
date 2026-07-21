@@ -16,13 +16,11 @@ use super::generator::{CharacterProseCandidates, NarrateRequest, ProseCandidate,
 /// 复用现有 rig + DeepSeek 基建。内部持有 `Extractor<LlmNarrative>`,
 /// 与 `RigSenseGenerator` 同构。不持有 `Vocab`,候选语义由
 /// `NarrateRequest.candidates` 直接携带。
-#[allow(dead_code)]
-pub(crate) struct RigProseGenerator {
+pub struct RigProseGenerator {
     extractor: Extractor<deepseek::CompletionModel, LlmNarrative>,
 }
 
 impl RigProseGenerator {
-    #[allow(dead_code)]
     pub fn new(client: deepseek::Client) -> Self {
         let extractor = client
             .extractor::<LlmNarrative>(deepseek::DEEPSEEK_V4_FLASH)

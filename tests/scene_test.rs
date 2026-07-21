@@ -11,6 +11,7 @@ use novels::llm::{
     MockSenseGenerator, SenseGenerator,
 };
 use novels::models::*;
+use novels::prose::MockProseGenerator;
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
 use std::collections::VecDeque;
@@ -154,7 +155,12 @@ async fn derive_character_persists_and_returns() {
         LlmContextTagSelection::default(),
         canned_derivation(),
     ));
-    let svc = StoryService::new(db.clone(), vocab, generator);
+    let svc = StoryService::new(
+        db.clone(),
+        vocab,
+        generator,
+        Arc::new(MockProseGenerator::fallback()),
+    );
 
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
@@ -185,7 +191,12 @@ async fn derive_character_rejects_non_participant() {
         LlmContextTagSelection::default(),
         canned_derivation(),
     ));
-    let svc = StoryService::new(db.clone(), vocab, generator);
+    let svc = StoryService::new(
+        db.clone(),
+        vocab,
+        generator,
+        Arc::new(MockProseGenerator::fallback()),
+    );
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
     db.characters().create(cid, "A", &[], &[]).await.unwrap();
@@ -209,7 +220,12 @@ async fn derive_scene_returns_partial_on_one_failure() {
     let generator = Arc::new(OneFailureGenerator {
         failing_character: c1,
     });
-    let svc = StoryService::new(db.clone(), vocab, generator);
+    let svc = StoryService::new(
+        db.clone(),
+        vocab,
+        generator,
+        Arc::new(MockProseGenerator::fallback()),
+    );
     let s = SceneId(uuid::Uuid::new_v4());
     db.characters().create(c1, "A", &[], &[]).await.unwrap();
     db.characters().create(c2, "B", &[], &[]).await.unwrap();
@@ -266,7 +282,12 @@ async fn retry_persists_complete_second_response() {
         }],
     };
     let generator = Arc::new(SequenceGenerator::new(vec![first, second]));
-    let svc = StoryService::new(db.clone(), vocab, generator);
+    let svc = StoryService::new(
+        db.clone(),
+        vocab,
+        generator,
+        Arc::new(MockProseGenerator::fallback()),
+    );
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
     db.characters().create(cid, "A", &[], &[]).await.unwrap();
@@ -308,7 +329,12 @@ async fn retry_rejects_two_invalid_responses_without_persisting() {
         plot_development: vec![],
     };
     let generator = Arc::new(SequenceGenerator::new(vec![invalid(), invalid()]));
-    let svc = StoryService::new(db.clone(), vocab, generator);
+    let svc = StoryService::new(
+        db.clone(),
+        vocab,
+        generator,
+        Arc::new(MockProseGenerator::fallback()),
+    );
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
     db.characters().create(cid, "A", &[], &[]).await.unwrap();
@@ -349,7 +375,12 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
         tags: vec!["injury".into()],
     };
     let generator = Arc::new(RecordingGenerator::new(tag_selection, vec![derivation]));
-    let svc = StoryService::new(db.clone(), vocab, generator.clone());
+    let svc = StoryService::new(
+        db.clone(),
+        vocab,
+        generator.clone(),
+        Arc::new(MockProseGenerator::fallback()),
+    );
 
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
@@ -424,7 +455,12 @@ async fn narrative_service_fixture(
     )
     .unwrap();
     let generator = Arc::new(RecordingGenerator::new(tag_selection, derivations));
-    let service = StoryService::new(db.clone(), vocab, generator.clone());
+    let service = StoryService::new(
+        db.clone(),
+        vocab,
+        generator.clone(),
+        Arc::new(MockProseGenerator::fallback()),
+    );
     let cid = CharacterId(uuid::Uuid::new_v4());
     db.characters().create(cid, "A", &[], &[]).await.unwrap();
 

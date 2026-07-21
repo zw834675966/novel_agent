@@ -9,6 +9,7 @@
 use novels::db::Db;
 use novels::llm::{LlmCharacterDerivation, LlmContextTagSelection, MockSenseGenerator};
 use novels::models::*;
+use novels::prose::MockProseGenerator;
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
 use std::sync::Arc;
@@ -34,7 +35,12 @@ async fn end_to_end_with_mock() {
         LlmContextTagSelection::default(),
         canned,
     ));
-    let svc = StoryService::new(db.clone(), vocab, generator);
+    let svc = StoryService::new(
+        db.clone(),
+        vocab,
+        generator,
+        Arc::new(MockProseGenerator::fallback()),
+    );
 
     let cid = CharacterId(uuid::Uuid::new_v4());
     db.characters()
