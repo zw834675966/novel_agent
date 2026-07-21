@@ -23,7 +23,8 @@ pub use assembly::AssembledProse;
 pub use contract::{LlmNarrative, NarrativeBeat};
 pub use generator::{CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator};
 pub use mock::MockProseGenerator;
-pub use rig_impl::RigProseGenerator;
+#[allow(unused_imports)]
+pub(crate) use rig_impl::RigProseGenerator;
 
 // crate 私有重导出:供 StoryService / rig_impl 跨模块调用,不对外暴露
 #[allow(unused_imports)]

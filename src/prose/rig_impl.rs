@@ -17,7 +17,7 @@ use super::generator::{CharacterProseCandidates, NarrateRequest, ProseCandidate,
 /// 复用现有 rig + DeepSeek 基建。内部持有 `Extractor<LlmNarrative>`,
 /// 与 `RigSenseGenerator` 同构。
 #[allow(dead_code)]
-pub struct RigProseGenerator {
+pub(crate) struct RigProseGenerator {
     extractor: Extractor<deepseek::CompletionModel, LlmNarrative>,
     vocab: Arc<Vocab>,
 }
@@ -82,6 +82,7 @@ fn build_prompt(req: &NarrateRequest) -> String {
 /// 从 derivations 构造每角色的语义候选引用(供 NarrateRequest 使用)
 ///
 /// 需要词库以解析每个 VocabularyId 的 text/tags/sense。
+#[allow(dead_code)]
 pub fn build_candidate_refs(
     derivations: &[CharacterDerivation],
     vocab: &Vocab,
@@ -112,6 +113,7 @@ pub fn build_candidate_refs(
 }
 
 /// 参与者 ID 集合(供 assemble 校验 pov)
+#[allow(dead_code)]
 pub fn participant_set(participants: &[crate::models::CharacterId]) -> HashSet<String> {
     participants.iter().map(|id| id.0.to_string()).collect()
 }
