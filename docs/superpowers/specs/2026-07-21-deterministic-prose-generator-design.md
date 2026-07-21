@@ -130,12 +130,14 @@ pub struct AssembledProse {
     pub text: String,
     pub stripped_refs: usize,
     pub rejected_beats: usize,
+    pub action_only_beats: usize,
 }
 ```
 
 - `text` is final deterministic output.
 - `stripped_refs` counts unknown, malformed, wrong-owner, or missing-vocabulary references.
 - `rejected_beats` counts beats whose POV is not a scene participant or has no matching derivation.
+- `action_only_beats` counts accepted beats that emit no descriptive vocabulary text, whether the LLM selected no references or every selected reference was stripped.
 
 These counters are part of the interface because partial success must be observable.
 
@@ -187,6 +189,34 @@ Recoverable content defects return `AssembledProse`:
 
 No retry is added for invalid references. Retrying would increase cost and make deterministic partial-success behavior dependent on another stochastic call.
 
+## Considerations and Deferred Improvements
+
+### Reference Granularity and Action-Only Output
+
+The LLM can select only vocabulary IDs already present in the POV character's derivation. This deliberately limits expressive freedom. If the LLM selects no references, or every reference fails ownership or vocabulary validation, the accepted beat emits only its action skeleton.
+
+This is valid partial-success behavior, not a hard error. The service exposes it through `action_only_beats` and `stripped_refs` so callers can distinguish healthy source-backed prose from degraded action-only output.
+
+The first response must not trigger an automatic LLM retry. Retry would add cost, latency, and stochastic behavior without changing the candidate set. Improve candidate generation or prompt quality when action-only output is frequent instead of retrying identical constraints.
+
+Reconsider candidate expansion only when representative scene tests show that valid POV derivations routinely provide no usable descriptive references. Any expansion must still preserve character ownership and vocabulary provenance.
+
+### Fixed Ordering and Prose Continuity
+
+The fixed eight-category order can sound mechanical when many categories appear in one beat. The order remains the MVP policy because it is deterministic, explainable, and easy to verify.
+
+Do not introduce a template engine or free-form LLM rewrite to hide this limitation. Either option would weaken source provenance and make output harder to reproduce.
+
+If golden-scene evaluations demonstrate repeated continuity problems, the next increment may add a pure internal transition policy with these constraints:
+
+- It may choose among a small set of typed category-order profiles.
+- It may add static punctuation or conjunctions between resolved fragments.
+- It must not rewrite, paraphrase, or merge vocabulary source text.
+- It must remain deterministic for identical input.
+- It must have golden tests for every supported profile and transition rule.
+
+This policy remains deferred until tests prove one fixed order is insufficient. The public `StoryService` and `AssembledProse` interfaces must not change when it is introduced.
+
 ## Runtime Wiring
 
 Production startup constructs one DeepSeek client and uses it to create both Rig adapters. The service owns both behind `Arc<dyn Trait>`.
@@ -210,6 +240,7 @@ When `DEEPSEEK_API_KEY` is absent, startup constructs both Mock adapters. Runtim
 - Non-participant POV rejected.
 - Missing derivation POV rejected.
 - Empty refs emit action only.
+- All-invalid refs emit action only and increment both `stripped_refs` and `action_only_beats`.
 - Empty beats return an error.
 
 ### Service Tests
@@ -219,6 +250,7 @@ When `DEEPSEEK_API_KEY` is absent, startup constructs both Mock adapters. Runtim
 - Duplicate character derivations fail before generator invocation.
 - Mock narration returns source-backed prose and counters.
 - Partial success retains valid beats and actions.
+- Action-only degradation is observable through `action_only_beats`.
 
 ### Quality Gates
 
@@ -285,8 +317,9 @@ Sources:
 3. `RigProseGenerator` does not own `Vocab`.
 4. All accepted descriptive text resolves from service-owned vocabulary entries.
 5. Invalid references and invalid POV beats are counted without discarding valid output.
-6. Action-only beats remain in output.
+6. Action-only beats remain in output and increment `action_only_beats`.
 7. Empty beat output is a hard error.
 8. Assembly order is deterministic and covered across all eight categories.
 9. Production and no-key runtime paths construct fully usable services.
 10. All quality gates pass.
+11. No automatic retry, template engine, or free-form rewrite is added to compensate for stripped references or fixed ordering.
