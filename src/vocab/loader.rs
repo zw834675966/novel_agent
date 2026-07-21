@@ -32,10 +32,25 @@ pub struct VocabFile {
     pub tactile: HashMap<String, VocabEntry>, // 触觉
     #[serde(default)]
     pub gustatory: HashMap<String, VocabEntry>, // 味觉
+    #[serde(default)]
+    pub emotion: HashMap<String, VocabEntry>, // 情绪心理
+    #[serde(default)]
+    pub gesture: HashMap<String, VocabEntry>, // 动作神态
+    #[serde(default)]
+    pub atmosphere: HashMap<String, VocabEntry>, // 氛围环境
 }
 
-/// 全部感官类别（候选集、候选集生成与标签发现共用同一份定义，防止遗漏）
-pub const SENSES: [&str; 5] = ["visual", "auditory", "olfactory", "tactile", "gustatory"];
+/// 全部感官/描写类别(候选集与校验共用同一份定义,防止遗漏)
+pub const SENSES: [&str; 8] = [
+    "visual",
+    "auditory",
+    "olfactory",
+    "tactile",
+    "gustatory",
+    "emotion",
+    "gesture",
+    "atmosphere",
+];
 
 /// 词库（已加载状态）
 /// =====================
@@ -68,6 +83,9 @@ impl Vocab {
             "olfactory" => Some(&self.file.olfactory),
             "tactile" => Some(&self.file.tactile),
             "gustatory" => Some(&self.file.gustatory),
+            "emotion" => Some(&self.file.emotion),
+            "gesture" => Some(&self.file.gesture),
+            "atmosphere" => Some(&self.file.atmosphere),
             _ => None,
         }
     }

@@ -53,3 +53,21 @@ fn context_tag_selection_deserializes_empty_tags() {
     let selected: LlmContextTagSelection = serde_json::from_str(r#"{"tags":[]}"#).unwrap();
     assert!(selected.tags.is_empty());
 }
+
+#[test]
+fn sensory_selection_deserializes_legacy_five_dimension_payloads() {
+    let selection: SensorySelection = serde_json::from_str(
+        r#"{
+            "visual_ids": [],
+            "auditory_ids": [],
+            "olfactory_ids": [],
+            "tactile_ids": [],
+            "gustatory_ids": []
+        }"#,
+    )
+    .unwrap();
+
+    assert!(selection.emotion_ids.is_empty());
+    assert!(selection.gesture_ids.is_empty());
+    assert!(selection.atmosphere_ids.is_empty());
+}

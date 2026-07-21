@@ -119,6 +119,53 @@ async fn latest_sensation_returns_most_recent() {
 }
 
 #[tokio::test]
+async fn sensation_round_trip_preserves_all_eight_dimensions() {
+    let db = Db::open_in_memory().await.unwrap();
+    let cid = CharacterId(Uuid::new_v4());
+    let sid = SceneId(Uuid::new_v4());
+    db.characters().create(cid, "C", &[], &[]).await.unwrap();
+    db.scenes()
+        .create(sid, "event", &[cid], Utc::now())
+        .await
+        .unwrap();
+    let sensations = SensorySelection {
+        visual_ids: vec![VocabularyId::new("visual.x").unwrap()],
+        auditory_ids: vec![VocabularyId::new("auditory.x").unwrap()],
+        olfactory_ids: vec![VocabularyId::new("olfactory.x").unwrap()],
+        tactile_ids: vec![VocabularyId::new("tactile.x").unwrap()],
+        gustatory_ids: vec![VocabularyId::new("gustatory.x").unwrap()],
+        emotion_ids: vec![VocabularyId::new("emotion.x").unwrap()],
+        gesture_ids: vec![VocabularyId::new("gesture.x").unwrap()],
+        atmosphere_ids: vec![VocabularyId::new("atmosphere.x").unwrap()],
+    };
+    db.derivations()
+        .insert_derivation(
+            cid,
+            sid,
+            &sensations,
+            &CharacterMemoryDraft {
+                content: "m".into(),
+                source: MemorySource::Witnessed,
+                certainty: Certainty::Certain,
+            },
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let (stored, stored_scene) = db.sensations().latest(cid).await.unwrap().unwrap();
+    assert_eq!(stored_scene, sid);
+    assert_eq!(stored.visual_ids, sensations.visual_ids);
+    assert_eq!(stored.auditory_ids, sensations.auditory_ids);
+    assert_eq!(stored.olfactory_ids, sensations.olfactory_ids);
+    assert_eq!(stored.tactile_ids, sensations.tactile_ids);
+    assert_eq!(stored.gustatory_ids, sensations.gustatory_ids);
+    assert_eq!(stored.emotion_ids, sensations.emotion_ids);
+    assert_eq!(stored.gesture_ids, sensations.gesture_ids);
+    assert_eq!(stored.atmosphere_ids, sensations.atmosphere_ids);
+}
+
+#[tokio::test]
 async fn list_memories_caps_at_50() {
     // 验证记忆查询上限为 50 条
     let db = Db::open_in_memory().await.unwrap();
