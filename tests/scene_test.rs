@@ -30,23 +30,34 @@ struct OneFailureGenerator {
 /// followed by a fixed derivation. Used to assert that the semantic
 /// vocabulary candidate metadata flows unchanged into the LLM prompt.
 struct RecordingGenerator {
-    last_tag_request: Mutex<Option<ContextTagRequest>>,
-    last_derivation_request: Mutex<Option<DerivationRequest>>,
-    tag_response: LlmContextTagSelection,
-    derivation_response: LlmCharacterDerivation,
+    context_tag_requests: Mutex<Vec<ContextTagRequest>>,
+    derivation_requests: Mutex<Vec<DerivationRequest>>,
+    tag_responses: Mutex<VecDeque<LlmContextTagSelection>>,
+    derivation_responses: Mutex<VecDeque<LlmCharacterDerivation>>,
 }
 
 impl RecordingGenerator {
     fn new(
         tag_response: LlmContextTagSelection,
-        derivation_response: LlmCharacterDerivation,
+        derivation_responses: Vec<LlmCharacterDerivation>,
     ) -> Self {
+        let tag_response_count = derivation_responses.len().max(1);
         Self {
-            last_tag_request: Mutex::new(None),
-            last_derivation_request: Mutex::new(None),
-            tag_response,
-            derivation_response,
+            context_tag_requests: Mutex::new(vec![]),
+            derivation_requests: Mutex::new(vec![]),
+            tag_responses: Mutex::new(
+                std::iter::repeat_n(tag_response, tag_response_count).collect(),
+            ),
+            derivation_responses: Mutex::new(derivation_responses.into()),
         }
+    }
+
+    async fn context_tag_requests(&self) -> Vec<ContextTagRequest> {
+        self.context_tag_requests.lock().await.clone()
+    }
+
+    async fn derivation_requests(&self) -> Vec<DerivationRequest> {
+        self.derivation_requests.lock().await.clone()
     }
 }
 
@@ -97,16 +108,24 @@ impl SenseGenerator for SequenceGenerator {
 #[async_trait::async_trait]
 impl SenseGenerator for RecordingGenerator {
     async fn derive(&self, req: &DerivationRequest) -> Result<LlmCharacterDerivation, StoryError> {
-        *self.last_derivation_request.lock().await = Some(req.clone());
-        Ok(self.derivation_response.clone())
+        self.derivation_requests.lock().await.push(req.clone());
+        self.derivation_responses
+            .lock()
+            .await
+            .pop_front()
+            .ok_or_else(|| StoryError::Llm("no derivation response configured".into()))
     }
 
     async fn select_context_tags(
         &self,
         req: &ContextTagRequest,
     ) -> Result<LlmContextTagSelection, StoryError> {
-        *self.last_tag_request.lock().await = Some(req.clone());
-        Ok(self.tag_response.clone())
+        self.context_tag_requests.lock().await.push(req.clone());
+        self.tag_responses
+            .lock()
+            .await
+            .pop_front()
+            .ok_or_else(|| StoryError::Llm("no context-tag response configured".into()))
     }
 }
 
@@ -329,7 +348,7 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
     let tag_selection = LlmContextTagSelection {
         tags: vec!["injury".into()],
     };
-    let generator = Arc::new(RecordingGenerator::new(tag_selection, derivation));
+    let generator = Arc::new(RecordingGenerator::new(tag_selection, vec![derivation]));
     let svc = StoryService::new(db.clone(), vocab, generator.clone());
 
     let cid = CharacterId(uuid::Uuid::new_v4());
@@ -348,10 +367,9 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
     assert_eq!(result.scene_id, sid);
 
     let tag_request = generator
-        .last_tag_request
-        .lock()
+        .context_tag_requests()
         .await
-        .clone()
+        .pop()
         .expect("select_context_tags was not invoked");
     assert_eq!(
         tag_request.available_tags,
@@ -360,14 +378,148 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
     );
 
     let request = generator
-        .last_derivation_request
-        .lock()
+        .derivation_requests()
         .await
-        .clone()
+        .pop()
         .expect("derive was not invoked");
     assert!(!request.candidates.is_empty());
     assert_eq!(request.candidates[0].id, "visual.bloodstain");
     assert_eq!(request.candidates[0].sense, "visual");
     assert_eq!(request.candidates[0].text, "血迹");
     assert_eq!(request.candidates[0].tags, vec!["injury"]);
+}
+
+fn derivation(memory: &str, plot: &str) -> LlmCharacterDerivation {
+    LlmCharacterDerivation {
+        sensations: SensorySelection {
+            visual_ids: vec![VocabularyId::new("visual.bloodstain").unwrap()],
+            ..Default::default()
+        },
+        new_memory: CharacterMemoryDraft {
+            content: memory.into(),
+            source: MemorySource::Witnessed,
+            certainty: Certainty::Certain,
+        },
+        plot_development: vec![PlotDevelopment {
+            kind: PlotDevelopmentKind::NewClue,
+            reason: plot.into(),
+        }],
+    }
+}
+
+async fn narrative_service_fixture(
+    tag_selection: LlmContextTagSelection,
+    derivations: Vec<LlmCharacterDerivation>,
+) -> (
+    Db,
+    StoryService,
+    Arc<RecordingGenerator>,
+    CharacterId,
+    SceneId,
+    SceneId,
+) {
+    let db = Db::open_in_memory().await.unwrap();
+    let vocab = Vocab::load_from_str(
+        "visual:\n  bloodstain:\n    text: bloodstain\n    tags: [injury]\nauditory:\n  footsteps:\n    text: footsteps\n    tags: [movement]\n",
+    )
+    .unwrap();
+    let generator = Arc::new(RecordingGenerator::new(tag_selection, derivations));
+    let service = StoryService::new(db.clone(), vocab, generator.clone());
+    let cid = CharacterId(uuid::Uuid::new_v4());
+    db.characters().create(cid, "A", &[], &[]).await.unwrap();
+
+    let early = service
+        .create_scene(CreateScene {
+            objective_event: "early".into(),
+            participant_ids: vec![cid],
+            occurred_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+    let later = service
+        .create_scene(CreateScene {
+            objective_event: "later".into(),
+            participant_ids: vec![cid],
+            occurred_at: chrono::Utc::now() + chrono::Duration::minutes(1),
+        })
+        .await
+        .unwrap();
+
+    (db, service, generator, cid, early, later)
+}
+
+#[tokio::test]
+async fn derive_character_uses_earlier_plot_and_replaces_same_scene() {
+    let (db, service, generator, cid, early, later) = narrative_service_fixture(
+        LlmContextTagSelection {
+            tags: vec!["injury".into()],
+        },
+        vec![
+            derivation("early memory", "early plot"),
+            derivation("first later", "first plot"),
+            derivation("second later", "second plot"),
+        ],
+    )
+    .await;
+    service.derive_character(early, cid).await.unwrap();
+    service.derive_character(later, cid).await.unwrap();
+    service.derive_character(later, cid).await.unwrap();
+
+    let requests = generator.derivation_requests().await;
+    assert_eq!(
+        requests[1].prior_plot_developments[0].development.reason,
+        "early plot"
+    );
+    assert_eq!(
+        db.memories().list(cid, 50).await.unwrap()[0].content,
+        "second later"
+    );
+}
+
+#[tokio::test]
+async fn empty_selected_tags_use_all_vocabulary_candidates() {
+    let (_db, service, generator, cid, early, _later) = narrative_service_fixture(
+        LlmContextTagSelection::default(),
+        vec![derivation("memory", "plot")],
+    )
+    .await;
+    service.derive_character(early, cid).await.unwrap();
+
+    let request = generator.derivation_requests().await.pop().unwrap();
+    assert_eq!(request.candidates.len(), 2);
+    assert!(
+        request
+            .candidates
+            .iter()
+            .any(|candidate| candidate.id == "visual.bloodstain")
+    );
+    assert!(
+        request
+            .candidates
+            .iter()
+            .any(|candidate| candidate.id == "auditory.footsteps")
+    );
+}
+
+#[tokio::test]
+async fn later_derivation_never_receives_future_scene_context() {
+    let (db, service, generator, cid, early, later) = narrative_service_fixture(
+        LlmContextTagSelection::default(),
+        vec![
+            derivation("future memory", "future plot"),
+            derivation("early memory", "early plot"),
+        ],
+    )
+    .await;
+    service.derive_character(later, cid).await.unwrap();
+    service.derive_character(early, cid).await.unwrap();
+
+    let request = generator.derivation_requests().await.pop().unwrap();
+    assert!(request.recent_memories.is_empty());
+    assert!(request.last_sensation.is_none());
+    assert!(request.prior_plot_developments.is_empty());
+    assert_eq!(
+        db.memories().list(cid, 50).await.unwrap()[0].content,
+        "early memory"
+    );
 }

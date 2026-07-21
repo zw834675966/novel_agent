@@ -1,7 +1,7 @@
 use crate::db::Db;
-use crate::llm::{DerivationRequest, LlmCharacterDerivation, SenseGenerator, VocabularyCandidate};
+use crate::llm::{ContextTagRequest, DerivationRequest, LlmCharacterDerivation, SenseGenerator};
 use crate::models::{CharacterDerivation, CharacterId, CreateScene, SceneId, StoryError};
-use crate::vocab::{SENSES, Vocab};
+use crate::vocab::Vocab;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
@@ -105,32 +105,37 @@ impl StoryService {
             return Err(StoryError::NotSceneParticipant(character_id, scene_id));
         }
 
-        // 2. 加载上下文：记忆 + 上次感官 + 候选词汇
-        let memories = self.db.memories().list(character_id, MEMORY_LIMIT).await?;
+        // 2. 只读取当前场景之前发生的上下文，避免未来事件泄漏进推导。
+        let memories = self
+            .db
+            .memories()
+            .list_before_scene(character_id, scene.occurred_at, MEMORY_LIMIT)
+            .await?;
         let last_sensation = self
             .db
             .sensations()
-            .latest(character_id)
+            .latest_before_scene(character_id, scene.occurred_at)
             .await?
             .map(|(s, _)| s);
-
-        let tags: Vec<&str> = vec![];
-        let candidate_set = self.vocab.candidate_set(&tags);
-        let candidates = SENSES
-            .iter()
-            .flat_map(|sense| {
-                self.vocab
-                    .entries(sense)
-                    .into_iter()
-                    .flat_map(move |entries| {
-                        entries.iter().map(move |(key, entry)| VocabularyCandidate {
-                            id: format!("{sense}.{key}"),
-                            sense: (*sense).to_string(),
-                            text: entry.text.clone(),
-                            tags: entry.tags.clone(),
-                        })
-                    })
+        let prior_plot_developments = self
+            .db
+            .plots()
+            .list_before_scene(character_id, scene.occurred_at)
+            .await?;
+        let raw_tags = self
+            .generator
+            .select_context_tags(&ContextTagRequest {
+                character: character.clone(),
+                scene: scene.clone(),
+                prior_plot_developments: prior_plot_developments.clone(),
+                available_tags: self.vocab.known_tags(),
             })
+            .await?;
+        let selected_tags = self.vocab.filter_known_tags(&raw_tags.tags);
+        let candidates = self.vocab.candidates_for_tags(&selected_tags);
+        let candidate_set = candidates
+            .iter()
+            .map(|candidate| candidate.id.clone())
             .collect();
 
         // 3. 构造请求并调用 LLM
@@ -140,7 +145,7 @@ impl StoryService {
             recent_memories: memories,
             last_sensation,
             candidates,
-            prior_plot_developments: vec![],
+            prior_plot_developments,
         };
 
         let raw: LlmCharacterDerivation = self.generator.derive(&req).await?;
@@ -149,11 +154,19 @@ impl StoryService {
         //    如果全部为空（LLM 选的词全非法），自动重试一次
         let (raw, sensations) = self.validate_with_retry(&req, raw, &candidate_set).await?;
 
-        // 5. 原子持久化
+        // 5. 原子替换当前场景已有结果，避免重复推导留下过期状态。
         let now = Utc::now();
         self.db
             .derivations()
-            .insert_derivation(character_id, scene_id, &sensations, &raw.new_memory, now)
+            .replace_derivation(
+                character_id,
+                scene_id,
+                &sensations,
+                &raw.new_memory,
+                &raw.plot_development,
+                &selected_tags,
+                now,
+            )
             .await?;
 
         Ok(CharacterDerivation {
