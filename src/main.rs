@@ -16,7 +16,6 @@ use novels::llm::{
 use novels::models::*;
 use novels::prose::{MockProseGenerator, ProseGenerator, RigProseGenerator};
 use novels::scene::StoryService;
-use novels::vocab::Vocab;
 use rig::client::ProviderClient;
 use rig::providers::deepseek;
 use std::sync::Arc;
@@ -29,7 +28,35 @@ async fn main() -> anyhow::Result<()> {
 
     // 初始化底层依赖
     let db = Db::open("novels.db").await?;
-    let vocab = Vocab::load_from_path(std::path::Path::new("assets/vocab.yaml"))?;
+
+    // 词库：base (assets/vocab.yaml) + 可选 distilled 目录合并
+    // - 默认：若 assets/distilled 存在则合并
+    // - NOVELS_DISTILLED_DIR=<path>：覆盖默认 distilled 目录（须为目录）
+    // - NOVELS_SKIP_DISTILLED=1：仅加载 base，跳过 distilled
+    let skip_distilled = std::env::var("NOVELS_SKIP_DISTILLED")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let distilled = if skip_distilled {
+        None
+    } else {
+        std::env::var("NOVELS_DISTILLED_DIR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_dir())
+            .or_else(|| {
+                let p = std::path::PathBuf::from("assets/distilled");
+                p.is_dir().then_some(p)
+            })
+    };
+    let (vocab, report) = novels::vocab::load_runtime_vocab(
+        std::path::Path::new("assets/vocab.yaml"),
+        distilled.as_deref(),
+    )?;
+    eprintln!(
+        "vocab loaded: base={} distilled_files={} total={}",
+        report.base_entries, report.distilled_files, report.total_entries
+    );
 
     // 初始化 LLM 生成器
     // rig::providers::deepseek::Client::from_env() 从 DEEPSEEK_API_KEY 环境变量创建客户端
