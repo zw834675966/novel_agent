@@ -73,6 +73,30 @@ emotion:
 }
 
 #[test]
+fn candidates_ranked_prefers_query_overlap_over_dict_order() {
+    let yaml = r#"
+visual:
+  zzz_noise: { text: "无关景物", tags: ["t"] }
+  aaa_hit: { text: "宝玉站在雨中", tags: ["t", "宝玉"] }
+emotion:
+  mid: { text: "心中一恸", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let selected = vec!["t".into()];
+    let query = vec!["宝玉".into()];
+    let ranked = v.candidates_ranked_limited(&selected, &query, 2, 2);
+    let ids: Vec<_> = ranked.iter().map(|c| c.id.as_str()).collect();
+    // "宝玉" hits aaa_hit hardest; must rank first (not zzz_noise dict order).
+    assert_eq!(ids[0], "visual.aaa_hit");
+    // Determinism
+    let ranked2 = v.candidates_ranked_limited(&selected, &query, 2, 2);
+    assert_eq!(
+        ranked.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ranked2.iter().map(|c| c.id.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn candidates_for_tags_fall_back_when_tags_have_no_entry_match() {
     let v = Vocab::load_from_str(sample_yaml()).unwrap();
     let candidates = v.candidates_for_tags(&["known-but-unmatched".to_string()]);

@@ -144,8 +144,25 @@ impl StoryService {
             })
             .await?;
         let selected_tags = self.vocab.filter_known_tags(&raw_tags.tags);
-        let candidates = self.vocab.candidates_for_tags_limited(
+        // Query terms for lexical ranking (RELiC-style select, no embeddings):
+        // character name + scene event + selected tags. See critique P0 / research stack.
+        let mut query_terms: Vec<String> = Vec::new();
+        if !character.name.trim().is_empty() {
+            query_terms.push(character.name.clone());
+        }
+        query_terms.extend(selected_tags.iter().cloned());
+        for part in scene
+            .objective_event
+            .split(|c: char| c.is_whitespace() || "，。！？、；：,.!?;:\"'《》【】".contains(c))
+        {
+            let t = part.trim();
+            if t.chars().count() >= 2 {
+                query_terms.push(t.to_string());
+            }
+        }
+        let candidates = self.vocab.candidates_ranked_limited(
             &selected_tags,
+            &query_terms,
             crate::vocab::DEFAULT_PER_SENSE_CAP,
             crate::vocab::DEFAULT_TOTAL_CAP,
         );

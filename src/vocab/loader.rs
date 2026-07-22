@@ -189,15 +189,74 @@ impl Vocab {
 
     /// Like [`Self::candidates_for_tags`], then applies per-sense and total caps.
     ///
-    /// Ordering is deterministic (SENSES order, then key dict order from collect).
-    /// Per-sense cap is applied while walking that order; total_max stops early.
+    /// When `query_terms` is empty, ranking is score-0 with id order (stable).
+    /// Prefer [`Self::candidates_ranked_limited`] when scene/character context exists.
     pub fn candidates_for_tags_limited(
         &self,
         selected: &[String],
         per_sense: usize,
         total_max: usize,
     ) -> Vec<VocabularyCandidate> {
+        self.candidates_ranked_limited(selected, &[], per_sense, total_max)
+    }
+
+    /// Lexical score for scene/character-aware ranking (critique P0).
+    /// Higher is better. Pure function; deterministic.
+    pub fn score_candidate(
+        c: &VocabularyCandidate,
+        selected: &[String],
+        query_terms: &[String],
+    ) -> i64 {
+        let mut score: i64 = 0;
+        for tag in &c.tags {
+            if selected.iter().any(|s| s == tag) {
+                score += 20;
+            }
+        }
+        for q in query_terms {
+            let q = q.trim();
+            if q.is_empty() {
+                continue;
+            }
+            let weight = (q.chars().count() as i64).clamp(1, 8);
+            if c.tags
+                .iter()
+                .any(|t| t.contains(q) || q.contains(t.as_str()))
+            {
+                score += 12 * weight;
+            }
+            if c.text.contains(q) {
+                score += 8 * weight;
+            }
+        }
+        score
+    }
+
+    /// Rank by [`Self::score_candidate`] (DESC) then id (ASC), then apply caps.
+    pub fn candidates_ranked_limited(
+        &self,
+        selected: &[String],
+        query_terms: &[String],
+        per_sense: usize,
+        total_max: usize,
+    ) -> Vec<VocabularyCandidate> {
         let mut all = self.candidates_for_tags(selected);
+        all.sort_by(|a, b| {
+            let sa = Self::score_candidate(a, selected, query_terms);
+            let sb = Self::score_candidate(b, selected, query_terms);
+            // Score DESC; ties break by SENSES order then id (stable with prior dict-cap tests).
+            sb.cmp(&sa).then_with(|| {
+                let ia = SENSES
+                    .iter()
+                    .position(|s| *s == a.sense)
+                    .unwrap_or(usize::MAX);
+                let ib = SENSES
+                    .iter()
+                    .position(|s| *s == b.sense)
+                    .unwrap_or(usize::MAX);
+                ia.cmp(&ib).then_with(|| a.id.cmp(&b.id))
+            })
+        });
         let mut out = Vec::new();
         let mut per: HashMap<String, usize> = HashMap::new();
         for c in all.drain(..) {

@@ -5,19 +5,66 @@ use crate::vocab::Vocab;
 
 use super::contract::LlmNarrative;
 
-/// 拼装结果:正文 + 剥离/拒绝/动作-唯一计数(可观测)
-/// =================================================
-/// `action_only_beats` 统计"被接受但描写为空、只输出 action"的 beat 数,
-/// 用于衡量 LLM 输出的"描写退化"程度。
+/// Max characters kept in a single beat `action` after sanitize (critique P0).
+pub const MAX_ACTION_CHARS: usize = 80;
+
+/// Common AI-causal / glue fillers stripped from action (programmatic, not prompt-only).
+const CAUSAL_FILLERS: &[&str] = &[
+    "因此",
+    "于是",
+    "所以",
+    "不禁",
+    "不由得",
+    "心中暗想",
+    "暗想",
+    "似乎感到",
+    "仿佛感到",
+    "突然意识到",
+    "忍不住",
+];
+
+/// 拼装结果:正文 + 剥离/拒绝/动作-唯一计数 + quote density 可观测
+/// ================================================================
+/// `action_only_beats` 统计"被接受但描写为空、只输出 action"的 beat 数。
+/// `quote_chars` / `total_chars` 用于 quote density（原著描写占比）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssembledProse {
     pub text: String,
     pub stripped_refs: usize,
     pub rejected_beats: usize,
     pub action_only_beats: usize,
+    /// Characters from injected vocab `text` (soul-bearing spans).
+    pub quote_chars: usize,
+    /// Total characters in final `text` (including actions and newlines).
+    pub total_chars: usize,
 }
 
 impl AssembledProse {
+    /// `quote_chars / total_chars` in \[0, 1\]; 0 if empty.
+    pub fn quote_density(&self) -> f64 {
+        if self.total_chars == 0 {
+            0.0
+        } else {
+            self.quote_chars as f64 / self.total_chars as f64
+        }
+    }
+
+    /// Strip causal fillers and hard-clamp action length (anti AI-causal glue).
+    pub fn sanitize_action(action: &str) -> String {
+        let mut s = action.to_string();
+        for filler in CAUSAL_FILLERS {
+            s = s.replace(filler, "");
+        }
+        // Collapse runs of whitespace left by removals.
+        let s: String = s.split_whitespace().collect::<Vec<_>>().join("");
+        let chars: Vec<char> = s.chars().collect();
+        if chars.len() > MAX_ACTION_CHARS {
+            chars.into_iter().take(MAX_ACTION_CHARS).collect()
+        } else {
+            chars.into_iter().collect()
+        }
+    }
+
     /// 把 `LlmNarrative` 拼装成正文
     /// =============================
     /// 规则:
@@ -27,7 +74,7 @@ impl AssembledProse {
     ///   4. 合法 ref 按固定 8 类顺序拼装:atmosphere -> visual -> auditory -> olfactory -> tactile -> gustatory -> emotion -> gesture
     ///   5. 同类内保持 ref 出现顺序,beat 间保持叙事顺序
     ///   6. 被接受的 beat 若描写为空但 action 非空 -> `action_only_beats`++
-    ///   7. action 非空时即使描写为空也输出 action 段
+    ///   7. action 经 [`Self::sanitize_action`] 后输出
     ///   8. 所有被接受的非空 beat 用单个 `\n` 连接
     pub(crate) fn assemble(
         narrative: &LlmNarrative,
@@ -50,6 +97,7 @@ impl AssembledProse {
         let mut total_stripped = 0usize;
         let mut rejected = 0usize;
         let mut action_only = 0usize;
+        let mut quote_chars = 0usize;
 
         for beat in &narrative.beats {
             let Beat { pov, action, refs } = unpack_beat(beat);
@@ -67,12 +115,14 @@ impl AssembledProse {
             };
             let (desc, stripped) = assemble_beat_descriptions(&refs, vocab, &allowed);
             total_stripped += stripped;
+            quote_chars += desc.chars().count();
 
+            let action = Self::sanitize_action(&action);
             let para = if desc.is_empty() {
                 if !action.trim().is_empty() {
                     action_only += 1;
                 }
-                action.clone()
+                action
             } else {
                 format!("{desc}{action}")
             };
@@ -81,11 +131,15 @@ impl AssembledProse {
             }
         }
 
+        let text = paragraphs.join("\n");
+        let total_chars = text.chars().count();
         Ok(Self {
-            text: paragraphs.join("\n"),
+            text,
             stripped_refs: total_stripped,
             rejected_beats: rejected,
             action_only_beats: action_only,
+            quote_chars,
+            total_chars,
         })
     }
 }
@@ -433,5 +487,45 @@ gesture:
         .unwrap_err();
 
         assert!(matches!(error, StoryError::Llm(message) if message.contains("no beats")));
+    }
+
+    #[test]
+    fn sanitize_action_strips_causal_fillers_and_clamps_length() {
+        let long = "于是".repeat(50);
+        let out = AssembledProse::sanitize_action(&format!("因此{long}不禁"));
+        assert!(!out.contains("因此"));
+        assert!(!out.contains("不禁"));
+        assert!(!out.contains("于是"));
+        assert!(out.chars().count() <= MAX_ACTION_CHARS);
+    }
+
+    #[test]
+    fn assemble_reports_quote_density_from_injected_text() {
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她落座。", &["emotion.sorrow"])]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &["emotion.sorrow"])],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        // "心中未免悔恨" + "她落座。"
+        assert!(prose.quote_chars > 0);
+        assert!(prose.total_chars >= prose.quote_chars);
+        assert!(prose.quote_density() > 0.0);
+        assert!(prose.quote_density() <= 1.0);
+        assert!(prose.text.contains("心中未免悔恨"));
+    }
+
+    #[test]
+    fn assemble_sanitizes_action_causal_glue() {
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "因此她转身。", &[])]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &[])],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert!(!prose.text.contains("因此"));
+        assert!(prose.text.contains("她转身"));
     }
 }

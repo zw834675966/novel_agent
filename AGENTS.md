@@ -42,8 +42,12 @@
   （跳过蒸馏合并：`NOVELS_SKIP_DISTILLED=1`。）
 - Override distilled dir: `NOVELS_DISTILLED_DIR=path` (must be an existing directory).
   （覆盖蒸馏目录：`NOVELS_DISTILLED_DIR=path`，须为已存在目录。）
-- Candidate caps (deterministic top-k): 24 per sense / 96 total; tags sent to LLM capped at 80.
+- Candidate caps: 24 per sense / 96 total; tags sent to LLM capped at 80.
   （候选硬顶：每感官类最多 24、总计最多 96；进入 LLM 的 tags 最多 80。）
+- Ranking (P0 anti-AI): `candidates_ranked_limited` scores by selected tags + lexical overlap with character name / scene event / tags (not pure dictionary order). Plan: `docs/superpowers/plans/2026-07-22-anti-ai-retrieve-action-p0.md`.
+  （排序：按标签命中 + 角色名/场景/query 词面重叠打分，非纯字典序截断。）
+- Prose action clamp: `AssembledProse::sanitize_action` strips causal fillers and clamps length; `quote_density()` reports injected-span ratio.
+  （正文 action 剥离因果套话并限长；`quote_density` 报告原著描写占比。）
 - Quality report: `python tools/distill_quality_report.py`
   （质量报告：`python tools/distill_quality_report.py`。）
 - Never commit secrets; treat `corpus/` and `assets/distilled/` as local copyrighted material (do not commit unless explicitly approved).
