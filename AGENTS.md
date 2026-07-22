@@ -31,6 +31,23 @@
   （无 API Key 时静默降级为 Mock 生成器，不崩溃。）
 - DB path: `novels.db` (SQLite, auto-created on first run).
   （数据库路径：novels.db，SQLite，首次运行自动创建。）
+- Vocabulary bootstrap: load `assets/vocab.yaml`, then merge `assets/distilled/` when that directory exists.
+  （词库引导：先加载 `assets/vocab.yaml`，若存在 `assets/distilled/` 则合并。）
+
+### Distilled vocabulary (optional)（可选蒸馏词库）
+
+- Default runtime: load `assets/vocab.yaml` then merge `assets/distilled/` if present.
+  （默认运行时：加载 base 词库，若存在则合并 `assets/distilled/`。）
+- Skip distilled merge: `NOVELS_SKIP_DISTILLED=1` (or `true`).
+  （跳过蒸馏合并：`NOVELS_SKIP_DISTILLED=1`。）
+- Override distilled dir: `NOVELS_DISTILLED_DIR=path` (must be an existing directory).
+  （覆盖蒸馏目录：`NOVELS_DISTILLED_DIR=path`，须为已存在目录。）
+- Candidate caps (deterministic top-k): 24 per sense / 96 total; tags sent to LLM capped at 80.
+  （候选硬顶：每感官类最多 24、总计最多 96；进入 LLM 的 tags 最多 80。）
+- Quality report: `python tools/distill_quality_report.py`
+  （质量报告：`python tools/distill_quality_report.py`。）
+- Never commit secrets; treat `corpus/` and `assets/distilled/` as local copyrighted material (do not commit unless explicitly approved).
+  （勿提交密钥；`corpus/` 与 `assets/distilled/` 视为本地版权素材，未经明确批准勿提交。）
 
 ## Architecture（架构）
 
@@ -70,8 +87,9 @@ src/
 │   ├── mod.rs      # pub use StoryService
 │   └── service.rs  # 场景创建/角色推导/批量推导
 └── vocab/          # 感官词库层
-    ├── mod.rs      # pub use Vocab + validate
-    ├── loader.rs   # YAML 加载 + 候选集生成
+    ├── mod.rs      # pub use Vocab + validate + load_runtime_vocab
+    ├── bootstrap.rs # 运行时：base + 可选 distilled 目录合并
+    ├── loader.rs   # YAML 加载 + 候选集生成（含 top-k caps）
     └── validate.rs # LLM 输出校验（过滤非法词汇）
 
 tests/
@@ -79,10 +97,11 @@ tests/
 ├── e2e.rs          # 端到端测试（Mock LLM）
 ├── models_test.rs  # VocabularyId 单元测试
 ├── scene_test.rs   # StoryService 单元测试
-└── vocab_test.rs   # 词库加载/校验测试
+└── vocab_test.rs   # 词库加载/校验/bootstrap 测试
 
 assets/
-└── vocab.yaml      # 五感词汇定义（visual/auditory/olfactory/tactile/gustatory）
+├── vocab.yaml      # 五感词汇定义（visual/auditory/olfactory/tactile/gustatory）
+└── distilled/      # 可选本地蒸馏词库目录（默认运行时合并，若存在）
 ```
 
 ## Design Patterns（设计模式）
@@ -270,34 +289,37 @@ Owns: `src/llm/contract.rs`, `src/llm/generator.rs`, `src/llm/rig_impl.rs`, `src
 
 #### Vocabulary and Validation（词库与校验）
 
-Owns: `assets/vocab.yaml`, `src/vocab/loader.rs`, `src/vocab/validate.rs`, and `src/vocab/mod.rs`.
+Owns: `assets/vocab.yaml`, `src/vocab/bootstrap.rs`, `src/vocab/loader.rs`, `src/vocab/validate.rs`, and `src/vocab/mod.rs`.
 
 - Base vocabulary contains five categories: `visual`, `auditory`, `olfactory`, `tactile`, and `gustatory`.
 - A vocabulary entry is keyed as `<sense>.<key>` and contains display `text` plus `tags`.
+- Runtime load path is `load_runtime_vocab(base, distilled_dir?)` in `bootstrap.rs`: base YAML, optional merge of a distilled directory.
 - Keep YAML loading and candidate generation in `loader.rs`; keep LLM output filtering in `validate.rs`.
+- Preserve deterministic candidate/tag caps: `DEFAULT_PER_SENSE_CAP=24`, `DEFAULT_TOTAL_CAP=96`, `DEFAULT_TAG_CAP=80`.
 - Preserve the guardrail that only vocabulary-backed selections survive validation.
-- Test parser, candidate, and invalid-selection behavior in `tests/vocab_test.rs`.
-- Checks: Run `cargo test --test vocab_test` after vocabulary loader, validation, or committed base vocabulary changes.
-- Boundary: Do not expand base-vocabulary work into optional corpus or distillation assets, generator behavior, or persistence changes without an explicit user request; preserve five senses and vocabulary-backed validation.
+- Test parser, candidate, bootstrap merge, and invalid-selection behavior in `tests/vocab_test.rs`.
+- Checks: Run `cargo test --test vocab_test` after vocabulary loader, validation, bootstrap, or committed base vocabulary changes.
+- Boundary: Do not expand base-vocabulary work into optional corpus or distillation assets, generator behavior, or persistence changes without an explicit user request; preserve five senses, caps, and vocabulary-backed validation.
 
 #### Corpus Distillation（语料蒸馏）
 
-Optional local assets only, possibly uncommitted: `src/bin/distill.rs`, `tools/extract_corpus.py`, `tools/distill_langextract.py`, `tools/validate_fragments.py`, `tools/verify_distilled.py`, `corpus/`, and `assets/distilled/`. They are not committed project functionality.
+Optional local assets only, possibly uncommitted: `src/bin/distill.rs`, `tools/extract_corpus.py`, `tools/distill_langextract.py`, `tools/validate_fragments.py`, `tools/verify_distilled.py`, `tools/distill_quality_report.py`, `corpus/`, and `assets/distilled/`. Distilled YAML is local material; runtime may merge it when present (see Distilled vocabulary above).
 
 - Before editing these paths or running their commands, confirm each required path exists and get explicit user instruction.
 - If present, treat `corpus/<book>/cNNN.txt` as source material. Never rewrite it unless the task explicitly changes corpus extraction.
 - If `src/bin/distill.rs` is present and the user explicitly requests local distillation, it requires `DEEPSEEK_API_KEY` and runs as `cargo run --bin distill -- <book> <start_chap> <end_chap>`.
 - If that local tool is present, it writes `assets/distilled/<book>-cNNN.yaml` and skips a chapter output that already exists; do not overwrite generated material without explicit instruction.
 - Local output fragments must be continuous source-text substrings after whitespace normalization. The generator locates and classifies; it must not invent or rewrite prose.
-- For explicitly approved local workflows, validate generated entries before treating them as usable vocabulary:
+- For explicitly approved local workflows, validate generated entries and report KPIs before treating them as usable vocabulary:
 
 ```powershell
 python tools/validate_fragments.py
 python tools/verify_distilled.py
+python tools/distill_quality_report.py
 ```
 
 - `python tools/validate_fragments.py --prune` rewrites local generated files when that tool is present. Run it only with explicit approval after inspecting reported invalid entries.
-- Checks: Only when optional local tools/assets are present and the user requests distillation work, run `python tools/validate_fragments.py` and `python tools/verify_distilled.py`; exclude `--prune` because it rewrites files.
+- Checks: Only when optional local tools/assets are present and the user requests distillation work, run `python tools/validate_fragments.py`, `python tools/verify_distilled.py`, and optionally `python tools/distill_quality_report.py`; exclude `--prune` because it rewrites files.
 - Boundary: Do not create, edit, delete, move, or regenerate optional local `src/bin/distill.rs`, `tools/`, `corpus/`, or `assets/distilled/` paths unless the user explicitly requests that local workflow. Preserve source-text provenance and do not treat these paths as committed baseline.
 
 ### Runtime Operations（运行操作）
@@ -312,7 +334,7 @@ cargo run
 - With `DEEPSEEK_API_KEY`, it constructs `RigSenseGenerator` and calls DeepSeek.
 - Without the key, it prints a warning and uses `MockSenseGenerator`; this path must remain runnable for local development and tests.
 - `novels.db` is created or reused in the repository root.
-- Base vocabulary loads from `assets/vocab.yaml`.
+- Vocabulary: `load_runtime_vocab` loads `assets/vocab.yaml`, then merges `assets/distilled/` when present unless `NOVELS_SKIP_DISTILLED=1`; override dir with `NOVELS_DISTILLED_DIR`.
 
 ### Quality Gates（质量门禁）
 
