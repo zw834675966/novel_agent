@@ -1,0 +1,36 @@
+# Controlled tag facets for distilled vocabulary (ELTeC-style small core).
+# Used offline by tools/normalize_tags.py — does not change LLM contracts.
+#
+# characters: open set — keep original person-name strings; strip non-facet noise
+# via drop_tokens and mood/setting allow-lists only.
+
+books: [hlm, zhz]
+
+moods:
+  - 哀伤
+  - 欢喜
+  - 愤怒
+  - 恐惧
+  - 羞赧
+  - 隐忍
+  - 关切
+  - 嫉妒
+  - 平静
+
+settings:
+  - 庭院
+  - 室内
+  - 宫闱
+  - 夜宴
+  - 路途
+  - 战场
+
+# Optional synonym → canonical mood (applied before mood allow-list).
+# Unlisted mood-like free tags are kept only if not pure abstract noise (see drop_tokens).
+mood_aliases: {}
+
+# Optional synonym → canonical setting.
+setting_aliases: {}
+
+# Abstract / role noise to strip from free tags.
+drop_tokens: [女主, 主人公, 动作, 心理]
