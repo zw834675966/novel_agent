@@ -73,6 +73,30 @@ emotion:
 }
 
 #[test]
+fn known_tags_ranked_prefers_query_name() {
+    let yaml = r#"
+visual:
+  a: { text: "x", tags: ["甲", "无关"] }
+  b: { text: "y", tags: ["乙", "林黛玉"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.known_tags_ranked_limited(&["林黛玉".into()], 2);
+    assert_eq!(ranked[0], "林黛玉");
+}
+
+#[test]
+fn candidates_ranked_voice_boost_prefers_named_character_tag() {
+    let yaml = r#"
+gesture:
+  other: { text: "他冷笑一声", tags: ["t", "贾琏"] }
+  self: { text: "宝玉点头", tags: ["t", "宝玉"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &["宝玉".into()], 2, 2);
+    assert_eq!(ranked[0].id, "gesture.self");
+}
+
+#[test]
 fn candidates_ranked_prefers_query_overlap_over_dict_order() {
     let yaml = r#"
 visual:

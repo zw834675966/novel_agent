@@ -5,24 +5,6 @@ use crate::vocab::Vocab;
 
 use super::contract::LlmNarrative;
 
-/// Max characters kept in a single beat `action` after sanitize (critique P0).
-pub const MAX_ACTION_CHARS: usize = 80;
-
-/// Common AI-causal / glue fillers stripped from action (programmatic, not prompt-only).
-const CAUSAL_FILLERS: &[&str] = &[
-    "因此",
-    "于是",
-    "所以",
-    "不禁",
-    "不由得",
-    "心中暗想",
-    "暗想",
-    "似乎感到",
-    "仿佛感到",
-    "突然意识到",
-    "忍不住",
-];
-
 /// 拼装结果:正文 + 剥离/拒绝/动作-唯一计数 + quote density 可观测
 /// ================================================================
 /// `action_only_beats` 统计"被接受但描写为空、只输出 action"的 beat 数。
@@ -51,18 +33,7 @@ impl AssembledProse {
 
     /// Strip causal fillers and hard-clamp action length (anti AI-causal glue).
     pub fn sanitize_action(action: &str) -> String {
-        let mut s = action.to_string();
-        for filler in CAUSAL_FILLERS {
-            s = s.replace(filler, "");
-        }
-        // Collapse runs of whitespace left by removals.
-        let s: String = s.split_whitespace().collect::<Vec<_>>().join("");
-        let chars: Vec<char> = s.chars().collect();
-        if chars.len() > MAX_ACTION_CHARS {
-            chars.into_iter().take(MAX_ACTION_CHARS).collect()
-        } else {
-            chars.into_iter().collect()
-        }
+        crate::text_guard::sanitize_free_text(action, crate::text_guard::MAX_ACTION_CHARS)
     }
 
     /// 把 `LlmNarrative` 拼装成正文
@@ -496,7 +467,7 @@ gesture:
         assert!(!out.contains("因此"));
         assert!(!out.contains("不禁"));
         assert!(!out.contains("于是"));
-        assert!(out.chars().count() <= MAX_ACTION_CHARS);
+        assert!(out.chars().count() <= crate::text_guard::MAX_ACTION_CHARS);
     }
 
     #[test]

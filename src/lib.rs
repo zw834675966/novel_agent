@@ -12,4 +12,5 @@ pub mod llm; // LLM 层：感官/记忆/情节推导的 trait 抽象与实现
 pub mod models; // 数据模型层：领域类型、ID、错误枚举
 pub mod prose; // 叙事生成层：结构化推导 -> 正文(LLM 编主线 + 原著片段拉取)
 pub mod scene; // 业务服务层：场景创建、角色推导、场景批量推导
+pub mod text_guard; // 自由文本护栏：因果套话剥离 + 长度硬顶
 pub mod vocab; // 感官词库层：YAML 定义 → 候选集 → LLM 输出验证

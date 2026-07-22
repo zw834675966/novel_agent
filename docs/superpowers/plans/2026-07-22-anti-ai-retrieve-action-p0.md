@@ -70,3 +70,9 @@ cargo clippy --all-targets -- -D warnings
 
 - Inline execution (not subagent) for speed; scope is 2 modules + tests.
 - Lexical scoring only (no BM25 crate / embed) per YAGNI.
+
+## P1 follow-up (executed 2026-07-22)
+
+- [x] `text_guard` module: shared free-text sanitize for action / memory / plot reason
+- [x] `known_tags_ranked_limited` + voice boost on exact character-name tags
+- [x] Wire `sanitize_derivation_free_text` after derive validation

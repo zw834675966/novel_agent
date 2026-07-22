@@ -180,7 +180,35 @@ impl Vocab {
 
     /// Returns known tags truncated to `max` (stable order from [`Self::known_tags`]).
     pub fn known_tags_limited(&self, max: usize) -> Vec<String> {
+        self.known_tags_ranked_limited(&[], max)
+    }
+
+    /// Score a vocabulary tag for shortlist relevance (higher is better).
+    pub fn score_tag(tag: &str, query_terms: &[String]) -> i64 {
+        let mut score: i64 = 0;
+        for q in query_terms {
+            let q = q.trim();
+            if q.is_empty() {
+                continue;
+            }
+            let weight = (q.chars().count() as i64).clamp(1, 8);
+            if tag == q {
+                score += 50 * weight;
+            } else if tag.contains(q) || q.contains(tag) {
+                score += 15 * weight;
+            }
+        }
+        score
+    }
+
+    /// Rank tags by query relevance then take top `max` (deterministic).
+    pub fn known_tags_ranked_limited(&self, query_terms: &[String], max: usize) -> Vec<String> {
         let mut tags = self.known_tags();
+        tags.sort_by(|a, b| {
+            let sa = Self::score_tag(a, query_terms);
+            let sb = Self::score_tag(b, query_terms);
+            sb.cmp(&sa).then_with(|| a.cmp(b))
+        });
         if tags.len() > max {
             tags.truncate(max);
         }
@@ -200,8 +228,11 @@ impl Vocab {
         self.candidates_ranked_limited(selected, &[], per_sense, total_max)
     }
 
-    /// Lexical score for scene/character-aware ranking (critique P0).
+    /// Lexical score for scene/character-aware ranking (critique P0/P1).
     /// Higher is better. Pure function; deterministic.
+    ///
+    /// Voice isolation: exact tag == query term (e.g. character name) gets a large boost
+    /// so other characters' fragments rank lower when name is in query_terms.
     pub fn score_candidate(
         c: &VocabularyCandidate,
         selected: &[String],
@@ -219,7 +250,11 @@ impl Vocab {
                 continue;
             }
             let weight = (q.chars().count() as i64).clamp(1, 8);
-            if c.tags
+            // Exact character-name / term on tag → strong voice boost (P1).
+            if c.tags.iter().any(|t| t == q) {
+                score += 40 * weight;
+            } else if c
+                .tags
                 .iter()
                 .any(|t| t.contains(q) || q.contains(t.as_str()))
             {

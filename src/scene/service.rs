@@ -4,6 +4,7 @@ use crate::models::{CharacterDerivation, CharacterId, CreateScene, SceneId, Stor
 use crate::prose::{
     AssembledProse, CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator,
 };
+use crate::text_guard::{MAX_MEMORY_CHARS, MAX_PLOT_REASON_CHARS, sanitize_free_text};
 use crate::vocab::Vocab;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
@@ -134,23 +135,11 @@ impl StoryService {
             .plots()
             .list_before_scene(character_id, scene.occurred_at)
             .await?;
-        let raw_tags = self
-            .sense_generator
-            .select_context_tags(&ContextTagRequest {
-                character: character.clone(),
-                scene: scene.clone(),
-                prior_plot_developments: prior_plot_developments.clone(),
-                available_tags: self.vocab.known_tags_limited(crate::vocab::DEFAULT_TAG_CAP),
-            })
-            .await?;
-        let selected_tags = self.vocab.filter_known_tags(&raw_tags.tags);
-        // Query terms for lexical ranking (RELiC-style select, no embeddings):
-        // character name + scene event + selected tags. See critique P0 / research stack.
+        // Build query early so tag shortlist is relevance-ranked (not pure alpha truncate).
         let mut query_terms: Vec<String> = Vec::new();
         if !character.name.trim().is_empty() {
             query_terms.push(character.name.clone());
         }
-        query_terms.extend(selected_tags.iter().cloned());
         for part in scene
             .objective_event
             .split(|c: char| c.is_whitespace() || "，。！？、；：,.!?;:\"'《》【】".contains(c))
@@ -160,6 +149,20 @@ impl StoryService {
                 query_terms.push(t.to_string());
             }
         }
+        let raw_tags = self
+            .sense_generator
+            .select_context_tags(&ContextTagRequest {
+                character: character.clone(),
+                scene: scene.clone(),
+                prior_plot_developments: prior_plot_developments.clone(),
+                available_tags: self
+                    .vocab
+                    .known_tags_ranked_limited(&query_terms, crate::vocab::DEFAULT_TAG_CAP),
+            })
+            .await?;
+        let selected_tags = self.vocab.filter_known_tags(&raw_tags.tags);
+        // Lexical ranking (RELiC-style select): name + scene tokens + selected tags.
+        query_terms.extend(selected_tags.iter().cloned());
         let candidates = self.vocab.candidates_ranked_limited(
             &selected_tags,
             &query_terms,
@@ -185,7 +188,10 @@ impl StoryService {
 
         // 4. 校验 LLM 输出的词汇是否在候选集中
         //    如果全部为空（LLM 选的词全非法），自动重试一次
-        let (raw, sensations) = self.validate_with_retry(&req, raw, &candidate_set).await?;
+        let (mut raw, sensations) = self.validate_with_retry(&req, raw, &candidate_set).await?;
+
+        // 4b. 自由文本护栏：记忆与情节 reason 剥因果套话并限长（批判 P1）
+        sanitize_derivation_free_text(&mut raw);
 
         // 5. 原子替换当前场景已有结果，避免重复推导留下过期状态。
         let now = Utc::now();
@@ -394,6 +400,14 @@ impl StoryService {
     }
 }
 
+/// Clamp memory content and plot reasons after LLM derive (critique P1 multi-layer leak).
+fn sanitize_derivation_free_text(raw: &mut LlmCharacterDerivation) {
+    raw.new_memory.content = sanitize_free_text(&raw.new_memory.content, MAX_MEMORY_CHARS);
+    for plot in &mut raw.plot_development {
+        plot.reason = sanitize_free_text(&plot.reason, MAX_PLOT_REASON_CHARS);
+    }
+}
+
 /// 从 derivations 构造每角色的语义候选引用(供 NarrateRequest 使用)
 ///
 /// 需要词库以解析每个 VocabularyId 的 text/tags/sense。
@@ -425,4 +439,34 @@ fn build_candidate_refs(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod free_text_guard_tests {
+    use super::sanitize_derivation_free_text;
+    use crate::llm::LlmCharacterDerivation;
+    use crate::models::{
+        Certainty, CharacterMemoryDraft, MemorySource, PlotDevelopment, PlotDevelopmentKind,
+        SensorySelection,
+    };
+
+    #[test]
+    fn sanitizes_memory_and_plot_reason() {
+        let mut raw = LlmCharacterDerivation {
+            sensations: SensorySelection::default(),
+            new_memory: CharacterMemoryDraft {
+                content: "因此他想起了不禁".into(),
+                source: MemorySource::Witnessed,
+                certainty: Certainty::Certain,
+            },
+            plot_development: vec![PlotDevelopment {
+                kind: PlotDevelopmentKind::NewClue,
+                reason: "于是发现线索".into(),
+            }],
+        };
+        sanitize_derivation_free_text(&mut raw);
+        assert!(!raw.new_memory.content.contains("因此"));
+        assert!(!raw.new_memory.content.contains("不禁"));
+        assert!(!raw.plot_development[0].reason.contains("于是"));
+    }
 }
