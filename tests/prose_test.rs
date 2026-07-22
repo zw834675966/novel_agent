@@ -235,3 +235,89 @@ async fn narration_returns_source_text_and_quality_counters() {
     assert_eq!(prose.stripped_refs, 1);
     assert_eq!(prose.action_only_beats, 1);
 }
+
+/// 闭环烟雾:base vocab merge 蒸馏 emotion 片段后,拼装正文解析出原著句。
+#[tokio::test]
+async fn assemble_resolves_distilled_emotion_text() {
+    let mut vocab = Vocab::load_from_str(include_str!("../assets/vocab.yaml")).unwrap();
+    vocab.merge(
+        Vocab::load_from_str(
+            r#"
+emotion:
+  hlm-c001-01:
+    text: "心中无限凄凉"
+    tags: ["hlm"]
+"#,
+        )
+        .unwrap(),
+    );
+
+    let character_id = CharacterId(Uuid::new_v4());
+    let cid_str = character_id.0.to_string();
+    let response = LlmNarrative {
+        beats: vec![NarrativeBeat {
+            pov: cid_str,
+            action: "她缓缓起身。".into(),
+            sensation_refs: vec!["emotion.hlm-c001-01".into()],
+        }],
+    };
+    let prose_gen = Arc::new(RecordingProseGenerator::new(response));
+    let sense = Arc::new(MockSenseGenerator::new(
+        LlmContextTagSelection::default(),
+        LlmCharacterDerivation {
+            sensations: SensorySelection::default(),
+            new_memory: CharacterMemoryDraft {
+                content: "mock".into(),
+                source: MemorySource::Witnessed,
+                certainty: Certainty::Certain,
+            },
+            plot_development: vec![],
+        },
+    ));
+    let db = Db::open_in_memory().await.unwrap();
+    let service = StoryService::new(db, vocab, sense, prose_gen);
+
+    service
+        .db()
+        .characters()
+        .create(character_id, "黛玉", &[], &[])
+        .await
+        .unwrap();
+    let scene_id = service
+        .create_scene(CreateScene {
+            objective_event: "雨夜独坐".into(),
+            participant_ids: vec![character_id],
+            occurred_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    let mut sensations = SensorySelection::default();
+    sensations
+        .emotion_ids
+        .push(VocabularyId::new("emotion.hlm-c001-01").unwrap());
+    let derivation = CharacterDerivation {
+        character_id,
+        scene_id,
+        sensations,
+        new_memory: CharacterMemoryDraft {
+            content: "心中凄凉".into(),
+            source: MemorySource::Witnessed,
+            certainty: Certainty::Certain,
+        },
+        plot_development: vec![],
+    };
+
+    let prose = service
+        .narrate_scene(scene_id, &[derivation])
+        .await
+        .unwrap();
+
+    assert!(
+        prose.text.contains("心中无限凄凉"),
+        "assembled text should resolve distilled emotion fragment, got: {}",
+        prose.text
+    );
+    assert!(prose.text.contains("她缓缓起身。"));
+    assert_eq!(prose.stripped_refs, 0);
+}
