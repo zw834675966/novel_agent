@@ -132,6 +132,50 @@ impl MemoryRepo {
         Ok(out)
     }
 
+    /// 列出指定场景的所有记忆（按 created_at ASC 排序）
+    pub async fn list_for_scene(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<Vec<CharacterMemory>, StoryError> {
+        let rows = sqlx::query(
+            "SELECT id, character_id, content, source, certainty, created_at \
+             FROM character_memories WHERE scene_id = ? \
+             ORDER BY created_at ASC",
+        )
+        .bind(scene_id.0.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            let id_str: String = sqlx::Row::try_get(&r, "id")?;
+            let character_id_str: String = sqlx::Row::try_get(&r, "character_id")?;
+            let content: String = sqlx::Row::try_get(&r, "content")?;
+            let source_str: String = sqlx::Row::try_get(&r, "source")?;
+            let certainty_str: String = sqlx::Row::try_get(&r, "certainty")?;
+            let created_at_str: String = sqlx::Row::try_get(&r, "created_at")?;
+            out.push(CharacterMemory {
+                id: MemoryId(
+                    Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?,
+                ),
+                character_id: CharacterId(
+                    Uuid::parse_str(&character_id_str)
+                        .map_err(|e| StoryError::Database(e.to_string()))?,
+                ),
+                scene_id,
+                content,
+                source: serde_json::from_str(&source_str)
+                    .map_err(|e| StoryError::Database(e.to_string()))?,
+                certainty: serde_json::from_str(&certainty_str)
+                    .map_err(|e| StoryError::Database(e.to_string()))?,
+                created_at: DateTime::parse_from_rfc3339(&created_at_str)
+                    .map_err(|e| StoryError::Database(e.to_string()))?
+                    .with_timezone(&Utc),
+            });
+        }
+        Ok(out)
+    }
+
     /// 在已有事务中插入记忆（供 DerivationRepo 跨表事务调用）
     ///
     /// # 返回

@@ -91,4 +91,44 @@ impl SceneRepo {
                 .await?;
         Ok(row.is_some())
     }
+
+    /// 列出全部场景（按 occurred_at, id 排序）
+    pub async fn list(&self) -> Result<Vec<Scene>, StoryError> {
+        let rows = sqlx::query(
+            "SELECT id, objective_event, occurred_at FROM scenes ORDER BY occurred_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::new();
+        for row in rows {
+            let id_str: String = sqlx::Row::try_get(&row, "id")?;
+            let objective_event: String = sqlx::Row::try_get(&row, "objective_event")?;
+            let occurred_at_str: String = sqlx::Row::try_get(&row, "occurred_at")?;
+            let occurred_at = DateTime::parse_from_rfc3339(&occurred_at_str)
+                .map_err(|e| StoryError::Database(e.to_string()))?
+                .with_timezone(&Utc);
+            let id =
+                SceneId(Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?);
+            let participant_ids: Vec<CharacterId> =
+                sqlx::query("SELECT character_id FROM scene_participants WHERE scene_id = ?")
+                    .bind(id.0.to_string())
+                    .fetch_all(&self.pool)
+                    .await?
+                    .iter()
+                    .map(|r| {
+                        let s: String = sqlx::Row::try_get(r, "character_id")?;
+                        let character_id =
+                            Uuid::parse_str(&s).map_err(|e| StoryError::Database(e.to_string()))?;
+                        Ok(CharacterId(character_id))
+                    })
+                    .collect::<Result<Vec<_>, StoryError>>()?;
+            out.push(Scene {
+                id,
+                objective_event,
+                participant_ids,
+                occurred_at,
+            });
+        }
+        Ok(out)
+    }
 }

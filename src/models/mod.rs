@@ -6,6 +6,7 @@
 //   - ID 使用 newtype 模式（类型安全防止混淆）
 //   - 错误类型使用 thiserror 派生
 
+pub mod action; // N3/N4: 结构化动作模板 + 情节原因短槽（舞台提示级，禁 AI 套路）
 pub mod character; // 角色定义（id/名字/性格标签/技能）
 pub mod derivation; // 推导结果（持久化版本，含 character_id/scene_id）
 pub mod error; // 全局错误枚举（thiserror）
@@ -17,8 +18,9 @@ pub mod relationship; // 关系类型、事实、候选、图快照
 pub mod scene; // 场景（Scene 持久化 + CreateScene 创建请求）
 pub mod sensation; // 五感选择（视觉/听觉/嗅觉/触觉/味觉）
 
+pub use action::{ActionKind, PlotReasonSlot, StructuredAction};
 pub use character::Character;
-pub use derivation::CharacterDerivation;
+pub use derivation::{CharacterDerivation, SceneDerivationDetail};
 pub use error::StoryError;
 pub use ids::{
     CharacterId, MemoryId, RelationshipCandidateId, RelationshipFactId, SceneId, VocabularyId,

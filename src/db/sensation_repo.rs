@@ -96,6 +96,51 @@ impl SensationRepo {
         Self::parse_row(&row)
     }
 
+    /// 列出指定场景的所有感官选择（含 character_id，按 created_at ASC）
+    pub async fn list_for_scene(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<Vec<(CharacterId, SensorySelection)>, StoryError> {
+        let rows = sqlx::query(
+            "SELECT character_id, visual_ids_json, auditory_ids_json, olfactory_ids_json, \
+             tactile_ids_json, gustatory_ids_json, emotion_ids_json, gesture_ids_json, \
+             atmosphere_ids_json FROM character_sensations \
+             WHERE scene_id = ? ORDER BY created_at ASC",
+        )
+        .bind(scene_id.0.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::new();
+        for row in &rows {
+            let character_id_str: String = sqlx::Row::try_get(row, "character_id")?;
+            let character_id = CharacterId(
+                Uuid::parse_str(&character_id_str)
+                    .map_err(|e| StoryError::Database(e.to_string()))?,
+            );
+            let visual: String = sqlx::Row::try_get(row, "visual_ids_json")?;
+            let auditory: String = sqlx::Row::try_get(row, "auditory_ids_json")?;
+            let olfactory: String = sqlx::Row::try_get(row, "olfactory_ids_json")?;
+            let tactile: String = sqlx::Row::try_get(row, "tactile_ids_json")?;
+            let gustatory: String = sqlx::Row::try_get(row, "gustatory_ids_json")?;
+            let emotion: String = sqlx::Row::try_get(row, "emotion_ids_json")?;
+            let gesture: String = sqlx::Row::try_get(row, "gesture_ids_json")?;
+            let atmosphere: String = sqlx::Row::try_get(row, "atmosphere_ids_json")?;
+            let sel = SensorySelection {
+                visual_ids: parse_ids(&visual)?,
+                auditory_ids: parse_ids(&auditory)?,
+                olfactory_ids: parse_ids(&olfactory)?,
+                tactile_ids: parse_ids(&tactile)?,
+                gustatory_ids: parse_ids(&gustatory)?,
+                emotion_ids: parse_ids(&emotion)?,
+                gesture_ids: parse_ids(&gesture)?,
+                atmosphere_ids: parse_ids(&atmosphere)?,
+            };
+            out.push((character_id, sel));
+        }
+        Ok(out)
+    }
+
     /// 将一行 character_sensations 记录解析为 (SensorySelection, SceneId)
     /// 严格 JSON 解析：任一维度解析失败 -> StoryError::Database
     fn parse_row(

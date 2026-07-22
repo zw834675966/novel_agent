@@ -451,6 +451,109 @@ impl StoryService {
             .resolve_candidate(candidate_id, resolution)
             .await
     }
+
+    // ---- 工作台读取 API ----
+
+    /// 列出全部角色（按 name, id 排序）
+    pub async fn list_characters(&self) -> Result<Vec<crate::models::Character>, StoryError> {
+        self.db.characters().list().await
+    }
+
+    /// 列出全部场景（按 occurred_at, id 排序）
+    pub async fn list_scenes(&self) -> Result<Vec<crate::models::Scene>, StoryError> {
+        self.db.scenes().list().await
+    }
+
+    /// 获取单个场景（不存在返回 None）
+    pub async fn get_scene(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<Option<crate::models::Scene>, StoryError> {
+        self.db.scenes().get(scene_id).await
+    }
+
+    /// 获取场景中所有参与者的推导详情（记忆/感官/剧情/候选）
+    pub async fn scene_derivations(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<Vec<crate::models::SceneDerivationDetail>, StoryError> {
+        let scene = self
+            .db
+            .scenes()
+            .get(scene_id)
+            .await?
+            .ok_or(StoryError::SceneNotFound(scene_id))?;
+
+        let memories = self.db.memories().list_for_scene(scene_id).await?;
+        let sensations = self.db.sensations().list_for_scene(scene_id).await?;
+        let plots = self.db.plots().list_for_scene(scene_id).await?;
+        let candidates = self
+            .db
+            .relationships()
+            .list_candidates_for_scene(scene_id)
+            .await?;
+
+        let mut details = Vec::new();
+        for cid in &scene.participant_ids {
+            let character = self
+                .db
+                .characters()
+                .get(*cid)
+                .await?
+                .ok_or(StoryError::CharacterNotFound(*cid))?;
+
+            let memory = memories
+                .iter()
+                .find(|m| m.character_id == *cid)
+                .cloned()
+                .ok_or(StoryError::CharacterNotFound(*cid))?;
+
+            let sensation = sensations
+                .iter()
+                .find(|(c, _)| c == cid)
+                .map(|(_, s)| s.clone())
+                .unwrap_or_default();
+
+            let char_plots: Vec<_> = plots
+                .iter()
+                .filter(|p| p.character_id == *cid)
+                .cloned()
+                .collect();
+            let char_candidates: Vec<_> = candidates
+                .iter()
+                .filter(|c| c.from_character_id == *cid)
+                .cloned()
+                .collect();
+
+            details.push(crate::models::SceneDerivationDetail {
+                character,
+                memory,
+                sensation,
+                plot_developments: char_plots,
+                relationship_candidates: char_candidates,
+            });
+        }
+        Ok(details)
+    }
+
+    /// 获取通过指定场景的关系图谱快照
+    pub async fn story_graph_through(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<crate::models::GraphSnapshot, StoryError> {
+        self.db
+            .relationships()
+            .graph_snapshot_through(scene_id)
+            .await
+    }
+
+    /// 获取关系事实的修订历史
+    pub async fn relationship_history(
+        &self,
+        fact_id: crate::models::RelationshipFactId,
+    ) -> Result<Vec<crate::models::RelationshipRevision>, StoryError> {
+        self.db.relationships().history(fact_id).await
+    }
 }
 
 /// 校验 LLM 关系候选并构建待持久化的 PendingCandidate

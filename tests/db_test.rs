@@ -616,3 +616,41 @@ async fn invalid_sensation_vocabulary_id_returns_database_error() {
         Err(StoryError::Database(_))
     ));
 }
+
+#[tokio::test]
+async fn list_scenes_orders_by_occurrence_then_id() {
+    let db = Db::open_in_memory().await.unwrap();
+    let cid = CharacterId(Uuid::new_v4());
+    db.characters().create(cid, "A", &[], &[]).await.unwrap();
+    let s1 = SceneId(Uuid::new_v4());
+    let s2 = SceneId(Uuid::new_v4());
+    let t1 = Utc::now();
+    let t2 = t1 + chrono::Duration::minutes(1);
+    // Insert later scene first to verify ordering is by occurred_at not insertion
+    db.scenes().create(s2, "later", &[cid], t2).await.unwrap();
+    db.scenes().create(s1, "earlier", &[cid], t1).await.unwrap();
+
+    let scenes = db.scenes().list().await.unwrap();
+    assert_eq!(
+        scenes
+            .iter()
+            .map(|s| s.objective_event.as_str())
+            .collect::<Vec<_>>(),
+        vec!["earlier", "later"]
+    );
+}
+
+#[tokio::test]
+async fn list_characters_orders_by_name_then_id() {
+    let db = Db::open_in_memory().await.unwrap();
+    let c1 = CharacterId(Uuid::new_v4());
+    let c2 = CharacterId(Uuid::new_v4());
+    db.characters().create(c2, "宝玉", &[], &[]).await.unwrap();
+    db.characters().create(c1, "黛玉", &[], &[]).await.unwrap();
+
+    let chars = db.characters().list().await.unwrap();
+    assert_eq!(chars.len(), 2);
+    // "宝玉" < "黛玉" lexicographically
+    assert_eq!(chars[0].name, "宝玉");
+    assert_eq!(chars[1].name, "黛玉");
+}

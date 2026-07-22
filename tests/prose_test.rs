@@ -138,12 +138,20 @@ async fn service_with_partial_success_response() -> PartialFixture {
         beats: vec![
             NarrativeBeat {
                 pov: cid_str.clone(),
-                action: "她俯身查看。".into(),
+                action: StructuredAction {
+                    kind: ActionKind::Inspect,
+                    target: Some("地面".into()),
+                    dialogue: None,
+                },
                 sensation_refs: vec!["visual.bloodstain".into()],
             },
             NarrativeBeat {
                 pov: cid_str,
-                action: "她继续调查。".into(),
+                action: StructuredAction {
+                    kind: ActionKind::Search,
+                    target: Some("线索".into()),
+                    dialogue: None,
+                },
                 sensation_refs: vec!["emotion.fabricated".into()],
             },
         ],
@@ -242,7 +250,8 @@ async fn narration_returns_source_text_and_quality_counters() {
         .unwrap();
 
     assert!(prose.text.contains("血迹"));
-    assert!(prose.text.contains("她俯身查看。"));
+    // N3: 动作现在是结构化的Inspect → "她查看地面"
+    assert!(prose.text.contains("她查看"));
     assert_eq!(prose.stripped_refs, 1);
     assert_eq!(prose.action_only_beats, 1);
     assert_eq!(prose.unverified_quotes, 0);
@@ -271,7 +280,11 @@ emotion:
     let response = LlmNarrative {
         beats: vec![NarrativeBeat {
             pov: cid_str,
-            action: "她缓缓起身。".into(),
+            action: StructuredAction {
+                kind: ActionKind::StandUp,
+                target: None,
+                dialogue: None,
+            },
             sensation_refs: vec!["emotion.hlm-c001-01".into()],
         }],
     };
@@ -338,6 +351,7 @@ emotion:
         "assembled text should resolve distilled emotion fragment, got: {}",
         prose.text
     );
-    assert!(prose.text.contains("她缓缓起身。"));
+    // N3: 动作现在是结构化的StandUp → "她起身"（不再是自由文本"她缓缓起身"）
+    assert!(prose.text.contains("她起身"));
     assert_eq!(prose.stripped_refs, 0);
 }

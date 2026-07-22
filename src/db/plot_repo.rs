@@ -83,6 +83,47 @@ impl PlotRepo {
         Ok(out)
     }
 
+    /// 列出指定场景的所有剧情发展（按 created_at ASC）
+    pub async fn list_for_scene(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<Vec<StoredPlotDevelopment>, StoryError> {
+        let rows = sqlx::query(
+            "SELECT id, character_id, scene_id, kind, reason, created_at \
+             FROM character_plot_developments WHERE scene_id = ? \
+             ORDER BY created_at ASC",
+        )
+        .bind(scene_id.0.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            let id_str: String = sqlx::Row::try_get(&r, "id")?;
+            let character_id_str: String = sqlx::Row::try_get(&r, "character_id")?;
+            let kind_str: String = sqlx::Row::try_get(&r, "kind")?;
+            let reason: String = sqlx::Row::try_get(&r, "reason")?;
+            let created_at_str: String = sqlx::Row::try_get(&r, "created_at")?;
+
+            let _id = Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?;
+            let cid = Uuid::parse_str(&character_id_str)
+                .map_err(|e| StoryError::Database(e.to_string()))?;
+            let kind: PlotDevelopmentKind =
+                serde_json::from_str(&kind_str).map_err(|e| StoryError::Database(e.to_string()))?;
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map_err(|e| StoryError::Database(e.to_string()))?
+                .with_timezone(&Utc);
+
+            out.push(StoredPlotDevelopment {
+                character_id: CharacterId(cid),
+                scene_id,
+                development: PlotDevelopment { kind, reason },
+                created_at,
+            });
+        }
+        Ok(out)
+    }
+
     /// 在已有事务中插入一条剧情发展（供 DerivationRepo 跨表事务调用）
     ///
     /// # 设计说明

@@ -54,7 +54,16 @@ impl AssembledProse {
         }
     }
 
-    /// Strip causal fillers and hard-clamp action length (anti AI-causal glue).
+    /// Render + sanitize a structured action.
+    /// N3: 舞台提示级渲染，subject 由角色名确定。
+    pub fn render_action(action: &crate::models::StructuredAction, subject: &str) -> String {
+        // StructuredAction.render 内部已调用 sanitize_free_text
+        let rendered = action.render(subject);
+        // 额外长度安全网
+        crate::text_guard::sanitize_free_text(&rendered, crate::text_guard::MAX_ACTION_CHARS)
+    }
+
+    /// Legacy string sanitizer (for backward compat / non-N3 code paths).
     pub fn sanitize_action(action: &str) -> String {
         crate::text_guard::sanitize_free_text(action, crate::text_guard::MAX_ACTION_CHARS)
     }
@@ -117,7 +126,8 @@ impl AssembledProse {
             quote_chars += desc.chars().count();
             injected_quotes.extend(quotes);
 
-            let action = Self::sanitize_action(&action);
+            // N3: 结构化动作渲染，主语用「他/她」（视角中性，实际应用可按角色性别替换）
+            let action = Self::render_action(&action, "她");
             let para = if desc.is_empty() {
                 if !action.trim().is_empty() {
                     action_only += 1;
@@ -377,7 +387,7 @@ fn assemble_beat_descriptions(
 
 struct Beat {
     pov: String,
-    action: String,
+    action: crate::models::StructuredAction,
     refs: Vec<String>,
 }
 
@@ -479,13 +489,13 @@ gesture:
         ids.iter().map(|id| (*id).to_string()).collect()
     }
 
-    fn narrative(beats: Vec<(&str, &str, &[&str])>) -> LlmNarrative {
+    fn narrative(beats: Vec<(&str, crate::models::StructuredAction, &[&str])>) -> LlmNarrative {
         LlmNarrative {
             beats: beats
                 .into_iter()
                 .map(|(pov, action, refs)| NarrativeBeat {
                     pov: pov.into(),
-                    action: action.into(),
+                    action,
                     sensation_refs: refs.iter().map(|raw| (*raw).to_string()).collect(),
                 })
                 .collect(),
@@ -504,27 +514,43 @@ gesture:
             "visual.bloodstain",
             "atmosphere.coldnight",
         ];
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Enter,
+            target: Some("房间".into()),
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "她起身推门。", &ids)]),
+            &narrative(vec![(CHARACTER_A, action, &ids)]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &ids)],
             &participants(&[CHARACTER_A]),
         )
         .unwrap();
 
+        // N3: 动作渲染为 "她进入房间"，不再是自由文本
         assert_eq!(
             prose.text,
-            "夜凉如水，血迹，脚步声，血腥味，冰凉的手，苦涩，心中未免悔恨，她伸手把帕子绞了又绞。她起身推门。"
+            "夜凉如水，血迹，脚步声，血腥味，冰凉的手，苦涩，心中未免悔恨，她伸手把帕子绞了又绞。她进入房间"
         );
         assert_eq!(prose.stripped_refs, 0);
     }
 
     #[test]
     fn preserves_beat_order() {
+        let action1 = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Pause,
+            target: None,
+            dialogue: Some("第一拍。".into()),
+        };
+        let action2 = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Pause,
+            target: None,
+            dialogue: Some("第二拍。".into()),
+        };
         let prose = AssembledProse::assemble(
             &narrative(vec![
-                (CHARACTER_A, "第一拍。", &[]),
-                (CHARACTER_A, "第二拍。", &[]),
+                (CHARACTER_A, action1, &[]),
+                (CHARACTER_A, action2, &[]),
             ]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &[])],
@@ -532,15 +558,23 @@ gesture:
         )
         .unwrap();
 
-        assert_eq!(prose.text, "第一拍。\n第二拍。");
+        // N3: 动作渲染为 "她停步，道：..."
+        assert!(prose.text.contains("第一拍。"));
+        assert!(prose.text.contains("第二拍。"));
+        assert!(prose.text.contains('\n'));
     }
 
     #[test]
     fn strips_unknown_and_malformed_refs() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::SitDown,
+            target: None,
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
             &narrative(vec![(
                 CHARACTER_A,
-                "她落座。",
+                action,
                 &["emotion.sorrow", "emotion.fabricated", "malformed"],
             )]),
             &sample_vocab(),
@@ -549,14 +583,20 @@ gesture:
         )
         .unwrap();
 
-        assert_eq!(prose.text, "心中未免悔恨。她落座。");
+        // N3: "她坐下" 而非 "她落座。"
+        assert_eq!(prose.text, "心中未免悔恨。她坐下");
         assert_eq!(prose.stripped_refs, 2);
     }
 
     #[test]
     fn strips_cross_character_refs() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::LookAt,
+            target: Some("上方".into()),
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "她抬头。", &["emotion.sorrow"])]),
+            &narrative(vec![(CHARACTER_A, action, &["emotion.sorrow"])]),
             &sample_vocab(),
             &[
                 derivation(CHARACTER_A, &[]),
@@ -566,31 +606,46 @@ gesture:
         )
         .unwrap();
 
-        assert_eq!(prose.text, "她抬头。");
+        assert_eq!(prose.text, "她看向上方");
         assert_eq!(prose.stripped_refs, 1);
         assert_eq!(prose.action_only_beats, 1);
     }
 
     #[test]
     fn strips_refs_missing_from_vocab() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::SitDown,
+            target: None,
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "她落座。", &["emotion.missing"])]),
+            &narrative(vec![(CHARACTER_A, action, &["emotion.missing"])]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.missing"])],
             &participants(&[CHARACTER_A]),
         )
         .unwrap();
 
-        assert_eq!(prose.text, "她落座。");
+        assert_eq!(prose.text, "她坐下");
         assert_eq!(prose.stripped_refs, 1);
     }
 
     #[test]
     fn rejects_non_participant_pov() {
+        let action_b = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Enter,
+            target: Some("房间".into()),
+            dialogue: None,
+        };
+        let action_a = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::LookAt,
+            target: Some("上方".into()),
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
             &narrative(vec![
-                (CHARACTER_B, "他闯入。", &[]),
-                (CHARACTER_A, "她抬头。", &["emotion.sorrow"]),
+                (CHARACTER_B, action_b, &[]),
+                (CHARACTER_A, action_a, &["emotion.sorrow"]),
             ]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
@@ -599,13 +654,18 @@ gesture:
         .unwrap();
 
         assert_eq!(prose.rejected_beats, 1);
-        assert_eq!(prose.text, "心中未免悔恨。她抬头。");
+        assert_eq!(prose.text, "心中未免悔恨。她看向上方");
     }
 
     #[test]
     fn rejects_pov_without_derivation() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Enter,
+            target: None,
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "她出现。", &[])]),
+            &narrative(vec![(CHARACTER_A, action, &[])]),
             &sample_vocab(),
             &[],
             &participants(&[CHARACTER_A]),
@@ -618,29 +678,39 @@ gesture:
 
     #[test]
     fn empty_refs_keep_action_and_count_action_only() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Turn,
+            target: Some("离开".into()),
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "她转身离开。", &[])]),
+            &narrative(vec![(CHARACTER_A, action, &[])]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &[])],
             &participants(&[CHARACTER_A]),
         )
         .unwrap();
 
-        assert_eq!(prose.text, "她转身离开。");
+        assert_eq!(prose.text, "她转身离开");
         assert_eq!(prose.action_only_beats, 1);
     }
 
     #[test]
     fn all_invalid_refs_keep_action_and_count_action_only() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::SitDown,
+            target: None,
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "她落座。", &["emotion.fabricated"])]),
+            &narrative(vec![(CHARACTER_A, action, &["emotion.fabricated"])]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
             &participants(&[CHARACTER_A]),
         )
         .unwrap();
 
-        assert_eq!(prose.text, "她落座。");
+        assert_eq!(prose.text, "她坐下");
         assert_eq!(prose.stripped_refs, 1);
         assert_eq!(prose.action_only_beats, 1);
     }
@@ -670,14 +740,19 @@ gesture:
 
     #[test]
     fn assemble_reports_quote_density_from_injected_text() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::SitDown,
+            target: None,
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "她落座。", &["emotion.sorrow"])]),
+            &narrative(vec![(CHARACTER_A, action, &["emotion.sorrow"])]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
             &participants(&[CHARACTER_A]),
         )
         .unwrap();
-        // "心中未免悔恨" + "她落座。"
+        // "心中未免悔恨" + "她坐下"
         assert!(prose.quote_chars > 0);
         assert!(prose.total_chars >= prose.quote_chars);
         assert!(prose.quote_density() > 0.0);
@@ -687,8 +762,14 @@ gesture:
 
     #[test]
     fn assemble_sanitizes_action_causal_glue() {
+        // N3: 结构化动作在 render 内已清理套话；target 含套话也会清理
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Turn,
+            target: Some("因此身".into()), // 含套话，render 时会清理
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "因此她转身。", &[])]),
+            &narrative(vec![(CHARACTER_A, action, &[])]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &[])],
             &participants(&[CHARACTER_A]),
@@ -700,10 +781,15 @@ gesture:
 
     #[test]
     fn join_rhythm_separates_short_sensory_lemmas() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Pause,
+            target: None,
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
             &narrative(vec![(
                 CHARACTER_A,
-                "他停步。",
+                action,
                 &["visual.bloodstain", "olfactory.bloodsmell"],
             )]),
             &sample_vocab(),
@@ -742,8 +828,13 @@ visual:
             "atmosphere.zhz-c001-01",
             "visual.bloodstain",
         ];
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Inspect,
+            target: Some("地面".into()),
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "他俯身。", &ids)]),
+            &narrative(vec![(CHARACTER_A, action, &ids)]),
             &v,
             &[derivation(CHARACTER_A, &ids)],
             &participants(&[CHARACTER_A]),
@@ -765,8 +856,13 @@ visual:
 
     #[test]
     fn verify_provenance_zero_for_clean_assemble() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::SitDown,
+            target: None,
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "她落座。", &["emotion.sorrow"])]),
+            &narrative(vec![(CHARACTER_A, action, &["emotion.sorrow"])]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
             &participants(&[CHARACTER_A]),
@@ -780,10 +876,20 @@ visual:
     #[test]
     fn quality_report_aggregates_kpis() {
         // One clean quote beat + one stripped-ref action-only beat.
+        let action1 = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Inspect,
+            target: Some("下方".into()),
+            dialogue: None,
+        };
+        let action2 = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Pause,
+            target: None,
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
             &narrative(vec![
-                (CHARACTER_A, "她俯身。", &["emotion.sorrow"]),
-                (CHARACTER_A, "她继续。", &["emotion.fabricated"]),
+                (CHARACTER_A, action1, &["emotion.sorrow"]),
+                (CHARACTER_A, action2, &["emotion.fabricated"]),
             ]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
@@ -802,8 +908,13 @@ visual:
 
     #[test]
     fn low_quote_density_flag_when_sparse() {
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::Turn,
+            target: Some("离开".into()),
+            dialogue: None,
+        };
         let prose = AssembledProse::assemble(
-            &narrative(vec![(CHARACTER_A, "她转身离开。", &[])]),
+            &narrative(vec![(CHARACTER_A, action, &[])]),
             &sample_vocab(),
             &[derivation(CHARACTER_A, &[])],
             &participants(&[CHARACTER_A]),
