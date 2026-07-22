@@ -83,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
                                 certainty: Certainty::Certain,
                             },
                             plot_development: vec![],
+                            relationship_candidates: vec![],
                         },
                     )),
                     Arc::new(MockProseGenerator::fallback()),

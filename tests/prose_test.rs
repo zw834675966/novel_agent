@@ -67,6 +67,7 @@ async fn service_fixture(prose: Arc<dyn ProseGenerator>) -> StoryService {
                 certainty: Certainty::Certain,
             },
             plot_development: vec![],
+            relationship_candidates: vec![],
         },
     ));
     StoryService::new(db, sample_vocab(), sense, prose)
@@ -77,12 +78,17 @@ fn derivation_for(scene_id: SceneId, character_id: CharacterId) -> CharacterDeri
         character_id,
         scene_id,
         sensations: SensorySelection::default(),
-        new_memory: CharacterMemoryDraft {
+        new_memory: CharacterMemory {
+            id: MemoryId(uuid::Uuid::new_v4()),
+            character_id,
+            scene_id,
             content: "mock".into(),
             source: MemorySource::Witnessed,
             certainty: Certainty::Certain,
+            created_at: chrono::Utc::now(),
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     }
 }
 
@@ -168,12 +174,17 @@ async fn service_with_partial_success_response() -> PartialFixture {
             character_id,
             scene_id,
             sensations,
-            new_memory: CharacterMemoryDraft {
+            new_memory: CharacterMemory {
+                id: MemoryId(uuid::Uuid::new_v4()),
+                character_id,
+                scene_id,
                 content: "saw blood".into(),
                 source: MemorySource::Witnessed,
                 certainty: Certainty::Certain,
+                created_at: chrono::Utc::now(),
             },
             plot_development: vec![],
+            relationship_candidates: vec![],
         }],
     }
 }
@@ -275,6 +286,7 @@ emotion:
                 certainty: Certainty::Certain,
             },
             plot_development: vec![],
+            relationship_candidates: vec![],
         },
     ));
     let db = Db::open_in_memory().await.unwrap();
@@ -303,12 +315,17 @@ emotion:
         character_id,
         scene_id,
         sensations,
-        new_memory: CharacterMemoryDraft {
+        new_memory: CharacterMemory {
+            id: MemoryId(uuid::Uuid::new_v4()),
+            character_id,
+            scene_id,
             content: "心中凄凉".into(),
             source: MemorySource::Witnessed,
             certainty: Certainty::Certain,
+            created_at: chrono::Utc::now(),
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     };
 
     let prose = service

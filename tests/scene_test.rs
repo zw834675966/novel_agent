@@ -142,6 +142,7 @@ fn canned_derivation() -> LlmCharacterDerivation {
             certainty: Certainty::Certain,
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     }
 }
 
@@ -265,6 +266,7 @@ async fn retry_persists_complete_second_response() {
             kind: PlotDevelopmentKind::SuspicionRaised,
             reason: "first plot".into(),
         }],
+        relationship_candidates: vec![],
     };
     let second = LlmCharacterDerivation {
         sensations: SensorySelection {
@@ -280,6 +282,7 @@ async fn retry_persists_complete_second_response() {
             kind: PlotDevelopmentKind::NewClue,
             reason: "second plot".into(),
         }],
+        relationship_candidates: vec![],
     };
     let generator = Arc::new(SequenceGenerator::new(vec![first, second]));
     let svc = StoryService::new(
@@ -327,6 +330,7 @@ async fn retry_rejects_two_invalid_responses_without_persisting() {
             certainty: Certainty::Certain,
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     };
     let generator = Arc::new(SequenceGenerator::new(vec![invalid(), invalid()]));
     let svc = StoryService::new(
@@ -370,6 +374,7 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
             certainty: Certainty::Certain,
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     };
     let tag_selection = LlmContextTagSelection {
         tags: vec!["injury".into()],
@@ -435,6 +440,7 @@ fn derivation(memory: &str, plot: &str) -> LlmCharacterDerivation {
             kind: PlotDevelopmentKind::NewClue,
             reason: plot.into(),
         }],
+        relationship_candidates: vec![],
     }
 }
 

@@ -134,9 +134,8 @@ impl MemoryRepo {
 
     /// 在已有事务中插入记忆（供 DerivationRepo 跨表事务调用）
     ///
-    /// # 设计说明
-    /// pub(crate) 而非 pub：只允许 DerivationRepo 在事务中调用，
-    /// 不允许单独插入记忆（必须与感官数据一起写入以保持一致性）。
+    /// # 返回
+    /// 生成的 MemoryId（供调用方构造 CharacterMemory 或关系候选 evidence）。
     pub async fn insert_in_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         character_id: CharacterId,
@@ -145,12 +144,13 @@ impl MemoryRepo {
         source: MemorySource,
         certainty: Certainty,
         now: DateTime<Utc>,
-    ) -> Result<(), StoryError> {
+    ) -> Result<MemoryId, StoryError> {
+        let id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO character_memories (id, character_id, scene_id, content, source, certainty, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(Uuid::new_v4().to_string())
+        .bind(id.to_string())
         .bind(character_id.0.to_string())
         .bind(scene_id.0.to_string())
         .bind(content)
@@ -165,6 +165,6 @@ impl MemoryRepo {
         .bind(now.to_rfc3339())
         .execute(&mut **tx)
         .await?;
-        Ok(())
+        Ok(MemoryId(id))
     }
 }

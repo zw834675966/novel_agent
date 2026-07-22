@@ -37,7 +37,7 @@ impl CandidateStatus {
 }
 
 /// 关系事实（持久化）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationshipFact {
     pub id: RelationshipFactId,
     pub from_character_id: CharacterId,
@@ -47,7 +47,7 @@ pub struct RelationshipFact {
 }
 
 /// 关系修订（持久化，历史记录）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationshipRevision {
     pub id: RelationshipFactId,
     pub relationship_fact_id: RelationshipFactId,
@@ -73,7 +73,7 @@ pub enum RevisionStatus {
 }
 
 /// 关系候选（持久化）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationshipCandidate {
     pub id: RelationshipCandidateId,
     pub scene_id: SceneId,
@@ -93,21 +93,21 @@ pub struct RelationshipCandidate {
 }
 
 /// 图快照（用于可视化）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphSnapshot {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
 }
 
 /// 图节点（角色）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphNode {
     pub id: CharacterId,
     pub name: String,
 }
 
 /// 图边（关系）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphEdge {
     pub fact_id: RelationshipFactId,
     pub from: CharacterId,

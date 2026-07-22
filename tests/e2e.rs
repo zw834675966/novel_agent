@@ -30,6 +30,7 @@ async fn end_to_end_with_mock() {
             certainty: Certainty::Certain,
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     };
     let generator = Arc::new(MockSenseGenerator::new(
         LlmContextTagSelection::default(),

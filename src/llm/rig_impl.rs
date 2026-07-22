@@ -208,6 +208,12 @@ mod tests {
             last_sensation: None,
             candidates: vec![],
             prior_plot_developments: vec![newer, older],
+            scene_participants: vec![Character {
+                id: character_id,
+                name: "A".into(),
+                personality: vec![],
+                skills: vec![],
+            }],
         };
 
         let derivation_prompt = RigSenseGenerator::build_derivation_prompt(&request);

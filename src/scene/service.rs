@@ -1,6 +1,13 @@
 use crate::db::Db;
-use crate::llm::{ContextTagRequest, DerivationRequest, LlmCharacterDerivation, SenseGenerator};
-use crate::models::{CharacterDerivation, CharacterId, CreateScene, SceneId, StoryError};
+use crate::db::{CandidateResolution, PendingCandidate};
+use crate::llm::{
+    ContextTagRequest, DerivationRequest, LlmCharacterDerivation, LlmRelationshipCandidate,
+    SenseGenerator,
+};
+use crate::models::{
+    CharacterDerivation, CharacterId, CreateScene, RelationshipCandidate, RelationshipCandidateId,
+    SceneId, StoryError,
+};
 use crate::prose::{
     AssembledProse, CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator,
 };
@@ -135,6 +142,20 @@ impl StoryService {
             .plots()
             .list_before_scene(character_id, scene.occurred_at)
             .await?;
+
+        // 加载场景全部参与者 Character（供关系候选参照）
+        let mut scene_participants: Vec<crate::models::Character> =
+            Vec::with_capacity(scene.participant_ids.len());
+        for pid in &scene.participant_ids {
+            let c = self
+                .db
+                .characters()
+                .get(*pid)
+                .await?
+                .ok_or(StoryError::CharacterNotFound(*pid))?;
+            scene_participants.push(c);
+        }
+
         // Build query early so tag shortlist is relevance-ranked (not pure alpha truncate).
         let mut query_terms: Vec<String> = Vec::new();
         if !character.name.trim().is_empty() {
@@ -176,12 +197,13 @@ impl StoryService {
 
         // 3. 构造请求并调用 LLM
         let req = DerivationRequest {
-            character,
-            scene,
+            character: character.clone(),
+            scene: scene.clone(),
             recent_memories: memories,
             last_sensation,
             candidates,
             prior_plot_developments,
+            scene_participants: scene_participants.clone(),
         };
 
         let raw: LlmCharacterDerivation = self.sense_generator.derive(&req).await?;
@@ -195,7 +217,8 @@ impl StoryService {
 
         // 5. 原子替换当前场景已有结果，避免重复推导留下过期状态。
         let now = Utc::now();
-        self.db
+        let new_memory = self
+            .db
             .derivations()
             .replace_derivation(
                 character_id,
@@ -208,12 +231,30 @@ impl StoryService {
             )
             .await?;
 
+        // 6. 校验并持久化关系候选（只保留目标为场景参与者的有效候选）
+        let participant_ids: HashSet<CharacterId> =
+            scene_participants.iter().map(|c| c.id).collect();
+        let mut relationship_candidates: Vec<RelationshipCandidate> = Vec::new();
+        for llm_cand in &raw.relationship_candidates {
+            if let Some(valid) = validate_and_build_pending_candidate(
+                character_id,
+                llm_cand,
+                scene_id,
+                &participant_ids,
+                Some(new_memory.id),
+            ) {
+                let stored = self.db.relationships().insert_pending(valid).await?;
+                relationship_candidates.push(stored);
+            }
+        }
+
         Ok(CharacterDerivation {
             character_id,
             scene_id,
             sensations,
-            new_memory: raw.new_memory,
+            new_memory,
             plot_development: raw.plot_development,
+            relationship_candidates,
         })
     }
 
@@ -398,6 +439,73 @@ impl StoryService {
             .collect();
         AssembledProse::assemble(&narrative, &self.vocab, &req.derivations, &participants)
     }
+
+    /// 解析关系候选（接受或拒绝），委托给 RelationshipRepo
+    pub async fn resolve_relationship_candidate(
+        &self,
+        candidate_id: RelationshipCandidateId,
+        resolution: CandidateResolution,
+    ) -> Result<(), StoryError> {
+        self.db
+            .relationships()
+            .resolve_candidate(candidate_id, resolution)
+            .await
+    }
+}
+
+/// 校验 LLM 关系候选并构建待持久化的 PendingCandidate
+///
+/// 规则：
+///   - 目标角色 != 源角色
+///   - 目标角色必须是场景参与者
+///   - summary 非空且不超过 200 Unicode 字符
+///   - 分数有效（0-100）
+///   - confidence 有限且在 [0.0, 1.0] 范围内
+///
+/// 返回 None 表示候选无效，应被丢弃（不阻塞有效推导）。
+fn validate_and_build_pending_candidate(
+    source: CharacterId,
+    llm_cand: &LlmRelationshipCandidate,
+    scene_id: SceneId,
+    participant_ids: &HashSet<CharacterId>,
+    evidence_memory_id: Option<crate::models::MemoryId>,
+) -> Option<PendingCandidate> {
+    if llm_cand.target_character_id == source {
+        return None;
+    }
+    if !participant_ids.contains(&llm_cand.target_character_id) {
+        return None;
+    }
+    let summary_trimmed = llm_cand.summary.trim();
+    if summary_trimmed.is_empty() || summary_trimmed.chars().count() > 200 {
+        return None;
+    }
+    // 分数校验
+    if llm_cand.tension_score.map(|v| v > 100).unwrap_or(false)
+        || llm_cand.trust_score.map(|v| v > 100).unwrap_or(false)
+        || llm_cand.affection_score.map(|v| v > 100).unwrap_or(false)
+        || llm_cand.power_score.map(|v| v > 100).unwrap_or(false)
+    {
+        return None;
+    }
+    // confidence 校验
+    if !llm_cand.confidence.is_finite() || llm_cand.confidence < 0.0 || llm_cand.confidence > 1.0 {
+        return None;
+    }
+
+    Some(PendingCandidate {
+        scene_id,
+        from: source,
+        to: llm_cand.target_character_id,
+        relationship_type: llm_cand.relationship_type,
+        summary: summary_trimmed.to_string(),
+        tension_score: llm_cand.tension_score,
+        trust_score: llm_cand.trust_score,
+        affection_score: llm_cand.affection_score,
+        power_score: llm_cand.power_score,
+        evidence_memory_id,
+        confidence: llm_cand.confidence,
+    })
 }
 
 /// Clamp memory content and plot reasons after LLM derive (critique P1 multi-layer leak).
@@ -463,6 +571,7 @@ mod free_text_guard_tests {
                 kind: PlotDevelopmentKind::NewClue,
                 reason: "于是发现线索".into(),
             }],
+            relationship_candidates: vec![],
         };
         sanitize_derivation_free_text(&mut raw);
         assert!(!raw.new_memory.content.contains("因此"));

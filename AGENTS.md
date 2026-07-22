@@ -50,6 +50,8 @@
   （自由文本护栏：action/记忆/情节 reason 剥套话并限长。）
 - Assemble verify: `AssembledProse` post-checks each injected quote appears in final `text` (`unverified_quotes`); `ProseQualityReport` aggregates quote_density / action_only_rate / stripped_ref_rate / low_quote_density (`MIN_QUOTE_DENSITY=0.30`, flag only — no hard fail).
   （装配后回源重扫 + 质量报告；低 density 仅标志不报错。）
+- Assemble rhythm + book-source isolation (platform reverse N1/N2): join injected quotes with `，`/`。` (no bare short-lemma paste); within a beat, conflicting `hlm`/`zhz` sources keep majority (base lemmas without source always kept). Desc↔action joined with `。` when needed.
+  （拼装节奏 + 书源隔离：防清单感与跨书串味。）
 - Tag shortlist: `known_tags_ranked_limited` ranks by scene/character query before cap 80; candidate score boosts exact name tags (voice isolation).
   （tag 短名单按场景/角色相关排序；候选对角色名 tag 强加权以减轻声口串味。）
 - Quality report: `python tools/distill_quality_report.py`

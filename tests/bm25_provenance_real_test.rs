@@ -98,7 +98,10 @@ fn real_bm25_vs_dict_quantitative() {
         };
         eprintln!("{i:>2}.{mark} {} | {}", c.id, c.text);
     }
-    assert!(relevant >= 1, "BM25 should surface at least 1 relevant in top-24");
+    assert!(
+        relevant >= 1,
+        "BM25 should surface at least 1 relevant in top-24"
+    );
 }
 
 #[tokio::test]
@@ -148,6 +151,7 @@ async fn real_provenance_scan_zero_on_clean_assemble() {
                 certainty: Certainty::Certain,
             },
             plot_development: vec![],
+            relationship_candidates: vec![],
         },
     ));
     let cid = CharacterId(uuid::Uuid::new_v4());
@@ -181,12 +185,17 @@ async fn real_provenance_scan_zero_on_clean_assemble() {
         character_id: cid,
         scene_id: sid,
         sensations: sens,
-        new_memory: CharacterMemoryDraft {
+        new_memory: CharacterMemory {
+            id: MemoryId(uuid::Uuid::new_v4()),
+            character_id: cid,
+            scene_id: sid,
             content: "m".into(),
             source: MemorySource::Witnessed,
             certainty: Certainty::Certain,
+            created_at: chrono::Utc::now(),
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     };
     let prose = svc.narrate_scene(sid, &[d]).await.unwrap();
 
@@ -230,6 +239,7 @@ async fn real_quality_report_flags_sparse_prose() {
                 certainty: Certainty::Certain,
             },
             plot_development: vec![],
+            relationship_candidates: vec![],
         },
     ));
     let cid = CharacterId(uuid::Uuid::new_v4());
@@ -262,12 +272,17 @@ async fn real_quality_report_flags_sparse_prose() {
         character_id: cid,
         scene_id: sid,
         sensations: SensorySelection::default(),
-        new_memory: CharacterMemoryDraft {
+        new_memory: CharacterMemory {
+            id: MemoryId(uuid::Uuid::new_v4()),
+            character_id: cid,
+            scene_id: sid,
             content: "m".into(),
             source: MemorySource::Witnessed,
             certainty: Certainty::Certain,
+            created_at: chrono::Utc::now(),
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     };
     let prose = svc.narrate_scene(sid, &[d]).await.unwrap();
 

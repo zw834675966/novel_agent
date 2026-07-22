@@ -124,7 +124,7 @@ impl AssembledProse {
                 }
                 action
             } else {
-                format!("{desc}{action}")
+                join_desc_action(&desc, &action)
             };
             // Count accepted beats that contribute to output (or empty accepted with empty action).
             accepted_beats += 1;
@@ -189,17 +189,132 @@ pub(crate) fn candidate_refs_for(derivation: &CharacterDerivation) -> HashSet<St
         .collect()
 }
 
+/// Resolved quote candidate before source filter + rhythm join.
+struct ResolvedQuote {
+    sense: String,
+    text: String,
+    /// Book corpus tag when known (`hlm` / `zhz`); base vocab is `None`.
+    source: Option<String>,
+}
+
+/// Infer book source from distilled key (`hlm-c103-46`) or tags (`hlm`/`zhz`).
+fn book_source(key: &str, tags: &[String]) -> Option<String> {
+    for t in tags {
+        if t == "hlm" || t == "zhz" {
+            return Some(t.clone());
+        }
+    }
+    if let Some(prefix) = key.split('-').next()
+        && (prefix == "hlm" || prefix == "zhz")
+    {
+        return Some(prefix.to_string());
+    }
+    None
+}
+
+fn ends_with_cjk_punct(s: &str) -> bool {
+    matches!(
+        s.chars().last(),
+        Some(
+            '。' | '，'
+                | '、'
+                | '！'
+                | '？'
+                | '；'
+                | '：'
+                | '…'
+                | '”'
+                | '」'
+                | '』'
+                | '.'
+                | ','
+                | '!'
+                | '?'
+        )
+    )
+}
+
+fn starts_with_cjk_punct(s: &str) -> bool {
+    matches!(
+        s.chars().next(),
+        Some('。' | '，' | '、' | '！' | '？' | '；' | '：' | '…' | '“' | '「' | '『')
+    )
+}
+
+/// Join injected quotes with light punctuation so short lemmas are not bare-pasted
+/// (platform P2: list / 注水 texture — "血迹血腥味侦探…").
+fn join_quotes_with_rhythm(parts: &[String]) -> String {
+    if parts.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i == 0 {
+            out.push_str(p);
+            continue;
+        }
+        if !ends_with_cjk_punct(&out) && !starts_with_cjk_punct(p) {
+            // Prefer comma between short sensory lemmas; period between longer spans.
+            let prev_short = parts[i - 1].chars().count() <= 6;
+            let cur_short = p.chars().count() <= 6;
+            if prev_short || cur_short {
+                out.push('，');
+            } else {
+                out.push('。');
+            }
+        }
+        out.push_str(p);
+    }
+    out
+}
+
+/// Join description block to action without bare glue.
+fn join_desc_action(desc: &str, action: &str) -> String {
+    if desc.is_empty() {
+        return action.to_string();
+    }
+    if action.is_empty() {
+        return desc.to_string();
+    }
+    if ends_with_cjk_punct(desc) || starts_with_cjk_punct(action) {
+        format!("{desc}{action}")
+    } else {
+        format!("{desc}。{action}")
+    }
+}
+
+/// Majority book source among hlm/zhz quotes; ties → first-seen.
+fn dominant_book_source(quotes: &[ResolvedQuote]) -> Option<String> {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for q in quotes {
+        if let Some(s) = &q.source {
+            if !counts.contains_key(s) {
+                order.push(s.clone());
+            }
+            *counts.entry(s.clone()).or_insert(0) += 1;
+        }
+    }
+    if counts.is_empty() {
+        return None;
+    }
+    let max = *counts.values().max().unwrap_or(&0);
+    order
+        .into_iter()
+        .find(|s| counts.get(s).copied().unwrap_or(0) == max)
+}
+
 /// 按类别有序拼装单 beat 的描写片段。
 ///
 /// 返回 `(描写段, 剥离计数, 注入的原文列表)`。
-/// 顺序模拟小说段落节奏:氛围开头 -> 感官穿插 -> 情绪 -> 神态
+/// - 书源隔离：同 beat 内 hlm/zhz 冲突时只保留多数源（基座词无源，始终可留）
+/// - 节奏：quote 间按需插入 ，/。，避免短词裸贴
 fn assemble_beat_descriptions(
     refs: &[String],
     vocab: &Vocab,
     allowed: &HashSet<String>,
 ) -> (String, usize, Vec<String>) {
-    let mut by_cat: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
+    let mut resolved: Vec<ResolvedQuote> = Vec::new();
     let mut stripped = 0;
     for raw in refs {
         if !allowed.contains(raw) {
@@ -214,10 +329,19 @@ fn assemble_beat_descriptions(
             stripped += 1;
             continue;
         };
-        by_cat
-            .entry(vid.sense().to_string())
-            .or_default()
-            .push(entry.text.clone());
+        resolved.push(ResolvedQuote {
+            sense: vid.sense().to_string(),
+            text: entry.text.clone(),
+            source: book_source(vid.key(), &entry.tags),
+        });
+    }
+
+    // Source isolation (platform P3: 跨书串味).
+    let dominant = dominant_book_source(&resolved);
+    if let Some(dom) = &dominant {
+        let before = resolved.len();
+        resolved.retain(|q| q.source.as_ref().map(|s| s == dom).unwrap_or(true));
+        stripped += before - resolved.len();
     }
 
     let order = [
@@ -230,6 +354,14 @@ fn assemble_beat_descriptions(
         "emotion",
         "gesture",
     ];
+    let mut by_cat: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for q in &resolved {
+        by_cat
+            .entry(q.sense.clone())
+            .or_default()
+            .push(q.text.clone());
+    }
     let mut parts: Vec<String> = Vec::new();
     for cat in order {
         if let Some(texts) = by_cat.get(cat) {
@@ -239,7 +371,8 @@ fn assemble_beat_descriptions(
         }
     }
     let quotes = parts.clone();
-    (parts.join(""), stripped, quotes)
+    let desc = join_quotes_with_rhythm(&parts);
+    (desc, stripped, quotes)
 }
 
 struct Beat {
@@ -260,7 +393,7 @@ fn unpack_beat(b: &super::contract::NarrativeBeat) -> Beat {
 mod tests {
     use super::*;
     use crate::models::{
-        Certainty, CharacterId, CharacterMemoryDraft, MemorySource, SceneId, SensorySelection,
+        Certainty, CharacterId, CharacterMemory, MemoryId, MemorySource, SceneId, SensorySelection,
         VocabularyId,
     };
     use crate::prose::NarrativeBeat;
@@ -328,12 +461,17 @@ gesture:
             character_id: CharacterId(uuid::Uuid::parse_str(character_id).unwrap()),
             scene_id: SceneId(uuid::Uuid::new_v4()),
             sensations,
-            new_memory: CharacterMemoryDraft {
+            new_memory: CharacterMemory {
+                id: MemoryId(uuid::Uuid::new_v4()),
+                character_id: CharacterId(uuid::Uuid::parse_str(character_id).unwrap()),
+                scene_id: SceneId(uuid::Uuid::new_v4()),
                 content: "mock".into(),
                 source: MemorySource::Witnessed,
                 certainty: Certainty::Certain,
+                created_at: chrono::Utc::now(),
             },
             plot_development: vec![],
+            relationship_candidates: vec![],
         }
     }
 
@@ -376,7 +514,7 @@ gesture:
 
         assert_eq!(
             prose.text,
-            "夜凉如水血迹脚步声血腥味冰凉的手苦涩心中未免悔恨她伸手把帕子绞了又绞她起身推门。"
+            "夜凉如水，血迹，脚步声，血腥味，冰凉的手，苦涩，心中未免悔恨，她伸手把帕子绞了又绞。她起身推门。"
         );
         assert_eq!(prose.stripped_refs, 0);
     }
@@ -411,7 +549,7 @@ gesture:
         )
         .unwrap();
 
-        assert_eq!(prose.text, "心中未免悔恨她落座。");
+        assert_eq!(prose.text, "心中未免悔恨。她落座。");
         assert_eq!(prose.stripped_refs, 2);
     }
 
@@ -461,7 +599,7 @@ gesture:
         .unwrap();
 
         assert_eq!(prose.rejected_beats, 1);
-        assert_eq!(prose.text, "心中未免悔恨她抬头。");
+        assert_eq!(prose.text, "心中未免悔恨。她抬头。");
     }
 
     #[test]
@@ -558,6 +696,71 @@ gesture:
         .unwrap();
         assert!(!prose.text.contains("因此"));
         assert!(prose.text.contains("她转身"));
+    }
+
+    #[test]
+    fn join_rhythm_separates_short_sensory_lemmas() {
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(
+                CHARACTER_A,
+                "他停步。",
+                &["visual.bloodstain", "olfactory.bloodsmell"],
+            )]),
+            &sample_vocab(),
+            &[derivation(
+                CHARACTER_A,
+                &["visual.bloodstain", "olfactory.bloodsmell"],
+            )],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        // Must not bare-paste "血迹血腥味"
+        assert!(!prose.text.contains("血迹血腥味"));
+        assert!(prose.text.contains("血迹"));
+        assert!(prose.text.contains("血腥味"));
+        assert!(prose.text.contains('，') || prose.text.contains('。'));
+    }
+
+    #[test]
+    fn book_source_isolation_drops_minority_corpus() {
+        let yaml = r#"
+atmosphere:
+  hlm-c001-01:
+    text: "满脸黑血直挺挺躺着"
+    tags: ["hlm", "尸体"]
+  zhz-c001-01:
+    text: "修竹千竿之后有个人影一闪"
+    tags: ["zhz", "竹林"]
+visual:
+  bloodstain:
+    text: "血迹"
+    tags: ["crime"]
+"#;
+        let v = Vocab::load_from_str(yaml).unwrap();
+        let ids = [
+            "atmosphere.hlm-c001-01",
+            "atmosphere.zhz-c001-01",
+            "visual.bloodstain",
+        ];
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "他俯身。", &ids)]),
+            &v,
+            &[derivation(CHARACTER_A, &ids)],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        // Tie hlm vs zhz (1 each) → first-seen wins (hlm); zhz stripped.
+        assert!(prose.text.contains("满脸黑血"));
+        assert!(!prose.text.contains("修竹千竿"));
+        assert!(prose.text.contains("血迹"), "base vocab kept");
+        assert_eq!(prose.stripped_refs, 1);
+    }
+
+    #[test]
+    fn book_source_from_key_prefix_without_tag() {
+        assert_eq!(book_source("hlm-c103-46", &[]), Some("hlm".into()));
+        assert_eq!(book_source("bloodstain", &[]), None);
+        assert_eq!(book_source("x", &["zhz".into()]), Some("zhz".into()));
     }
 
     #[test]
