@@ -52,6 +52,13 @@ pub const SENSES: [&str; 8] = [
     "atmosphere",
 ];
 
+/// 每个 sense 类别最多进入 prompt 的候选数（确定性 top-k）
+pub const DEFAULT_PER_SENSE_CAP: usize = 24;
+/// 候选总数上限（跨 sense 合计）
+pub const DEFAULT_TOTAL_CAP: usize = 96;
+/// 传给 LLM 的 known tags 上限
+pub const DEFAULT_TAG_CAP: usize = 80;
+
 /// 词库（已加载状态）
 /// =====================
 /// 提供按感官类别查询、按标签过滤、生成候选集等功能。
@@ -171,6 +178,42 @@ impl Vocab {
         }
     }
 
+    /// Returns known tags truncated to `max` (stable order from [`Self::known_tags`]).
+    pub fn known_tags_limited(&self, max: usize) -> Vec<String> {
+        let mut tags = self.known_tags();
+        if tags.len() > max {
+            tags.truncate(max);
+        }
+        tags
+    }
+
+    /// Like [`Self::candidates_for_tags`], then applies per-sense and total caps.
+    ///
+    /// Ordering is deterministic (SENSES order, then key dict order from collect).
+    /// Per-sense cap is applied while walking that order; total_max stops early.
+    pub fn candidates_for_tags_limited(
+        &self,
+        selected: &[String],
+        per_sense: usize,
+        total_max: usize,
+    ) -> Vec<VocabularyCandidate> {
+        let mut all = self.candidates_for_tags(selected);
+        let mut out = Vec::new();
+        let mut per: HashMap<String, usize> = HashMap::new();
+        for c in all.drain(..) {
+            let n = per.entry(c.sense.clone()).or_insert(0);
+            if *n >= per_sense {
+                continue;
+            }
+            *n += 1;
+            out.push(c);
+            if out.len() >= total_max {
+                break;
+            }
+        }
+        out
+    }
+
     fn collect_candidates(&self, selected: Option<&[String]>) -> Vec<VocabularyCandidate> {
         let mut candidates = Vec::new();
 
@@ -197,5 +240,37 @@ impl Vocab {
         }
 
         candidates
+    }
+
+    /// 合并另一份词库(蒸馏素材库叠加到手写基础词库上;键冲突时以 other 为准)
+    pub fn merge(&mut self, other: Vocab) {
+        self.file.visual.extend(other.file.visual);
+        self.file.auditory.extend(other.file.auditory);
+        self.file.olfactory.extend(other.file.olfactory);
+        self.file.tactile.extend(other.file.tactile);
+        self.file.gustatory.extend(other.file.gustatory);
+        self.file.emotion.extend(other.file.emotion);
+        self.file.gesture.extend(other.file.gesture);
+        self.file.atmosphere.extend(other.file.atmosphere);
+    }
+
+    /// 从目录加载所有 *.yaml 并合并(用于 assets/distilled/ 素材库)
+    pub fn load_dir_merged(
+        &mut self,
+        dir: &std::path::Path,
+    ) -> Result<usize, super::super::models::StoryError> {
+        let mut n = 0;
+        let entries = std::fs::read_dir(dir)
+            .map_err(|e| super::super::models::StoryError::VocabularyLoad(e.to_string()))?;
+        let mut paths: Vec<_> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("yaml"))
+            .collect();
+        paths.sort();
+        for p in paths {
+            self.merge(Self::load_from_path(&p)?);
+            n += 1;
+        }
+        Ok(n)
     }
 }

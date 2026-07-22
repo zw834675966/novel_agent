@@ -50,6 +50,29 @@ fn candidates_for_tags_include_semantic_metadata() {
 }
 
 #[test]
+fn candidates_for_tags_respects_total_cap() {
+    let yaml = r#"
+visual:
+  a: { text: "a", tags: ["t"] }
+  b: { text: "b", tags: ["t"] }
+  c: { text: "c", tags: ["t"] }
+emotion:
+  d: { text: "d", tags: ["t"] }
+  e: { text: "e", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let c = v.candidates_for_tags_limited(&["t".into()], 2, 3);
+    assert!(c.len() <= 3);
+    // 确定性：同输入多次结果一致（VocabularyCandidate 无 PartialEq，比 id 列表）
+    let c2 = v.candidates_for_tags_limited(&["t".into()], 2, 3);
+    let ids: Vec<_> = c.iter().map(|x| x.id.as_str()).collect();
+    let ids2: Vec<_> = c2.iter().map(|x| x.id.as_str()).collect();
+    assert_eq!(ids, ids2);
+    // per_sense=2 且 sense 序 visual→…→emotion：先 visual.a/b，再 emotion.d，共 3
+    assert_eq!(ids, vec!["visual.a", "visual.b", "emotion.d"]);
+}
+
+#[test]
 fn candidates_for_tags_fall_back_when_tags_have_no_entry_match() {
     let v = Vocab::load_from_str(sample_yaml()).unwrap();
     let candidates = v.candidates_for_tags(&["known-but-unmatched".to_string()]);
