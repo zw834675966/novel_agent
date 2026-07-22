@@ -50,12 +50,18 @@ pub fn validate_selection(
     cleaned.olfactory_ids = clean(&sel.olfactory_ids, "olfactory.");
     cleaned.tactile_ids = clean(&sel.tactile_ids, "tactile.");
     cleaned.gustatory_ids = clean(&sel.gustatory_ids, "gustatory.");
+    cleaned.emotion_ids = clean(&sel.emotion_ids, "emotion.");
+    cleaned.gesture_ids = clean(&sel.gesture_ids, "gesture.");
+    cleaned.atmosphere_ids = clean(&sel.atmosphere_ids, "atmosphere.");
 
     let all_empty = cleaned.visual_ids.is_empty()
         && cleaned.auditory_ids.is_empty()
         && cleaned.olfactory_ids.is_empty()
         && cleaned.tactile_ids.is_empty()
-        && cleaned.gustatory_ids.is_empty();
+        && cleaned.gustatory_ids.is_empty()
+        && cleaned.emotion_ids.is_empty()
+        && cleaned.gesture_ids.is_empty()
+        && cleaned.atmosphere_ids.is_empty();
 
     ValidationResult {
         cleaned,

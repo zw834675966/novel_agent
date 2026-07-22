@@ -38,6 +38,77 @@ fn candidates_filter_by_tag() {
 }
 
 #[test]
+fn candidates_for_tags_include_semantic_metadata() {
+    let v = Vocab::load_from_str(sample_yaml()).unwrap();
+    let candidates = v.candidates_for_tags(&["injury".to_string()]);
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, "visual.bloodstain");
+    assert_eq!(candidates[0].sense, "visual");
+    assert_eq!(candidates[0].text, "血迹");
+    assert_eq!(candidates[0].tags, vec!["injury"]);
+}
+
+#[test]
+fn candidates_for_tags_respects_total_cap() {
+    let yaml = r#"
+visual:
+  a: { text: "a", tags: ["t"] }
+  b: { text: "b", tags: ["t"] }
+  c: { text: "c", tags: ["t"] }
+emotion:
+  d: { text: "d", tags: ["t"] }
+  e: { text: "e", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let c = v.candidates_for_tags_limited(&["t".into()], 2, 3);
+    assert!(c.len() <= 3);
+    // 确定性：同输入多次结果一致（VocabularyCandidate 无 PartialEq，比 id 列表）
+    let c2 = v.candidates_for_tags_limited(&["t".into()], 2, 3);
+    let ids: Vec<_> = c.iter().map(|x| x.id.as_str()).collect();
+    let ids2: Vec<_> = c2.iter().map(|x| x.id.as_str()).collect();
+    assert_eq!(ids, ids2);
+    // per_sense=2 且 sense 序 visual→…→emotion：先 visual.a/b，再 emotion.d，共 3
+    assert_eq!(ids, vec!["visual.a", "visual.b", "emotion.d"]);
+}
+
+#[test]
+fn candidates_for_tags_fall_back_when_tags_have_no_entry_match() {
+    let v = Vocab::load_from_str(sample_yaml()).unwrap();
+    let candidates = v.candidates_for_tags(&["known-but-unmatched".to_string()]);
+
+    assert_eq!(candidates.len(), 2);
+}
+
+#[test]
+fn known_tags_and_filter_known_tags_are_sorted_and_deduplicated() {
+    let v = Vocab::load_from_str(sample_yaml()).unwrap();
+    let tags = [
+        "movement".to_string(),
+        "unknown".to_string(),
+        "injury".to_string(),
+        "movement".to_string(),
+    ];
+
+    assert_eq!(v.known_tags(), vec!["injury", "movement"]);
+    assert_eq!(v.filter_known_tags(&tags), vec!["injury", "movement"]);
+}
+
+#[test]
+fn candidates_for_tags_fall_back_when_filter_known_tags_drops_all() {
+    // 回归测试：filter_known_tags 产出的空选择必须触发 candidates_for_tags 全量回退。
+    let v = Vocab::load_from_str(sample_yaml()).unwrap();
+    let absent = "absent-tag".to_string();
+    let filtered = v.filter_known_tags(&[absent]);
+    assert!(filtered.is_empty());
+
+    let candidates = v.candidates_for_tags(&filtered);
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].id, "visual.bloodstain");
+    assert_eq!(candidates[1].id, "auditory.footsteps");
+}
+
+#[test]
 fn validate_strips_unknown_ids() {
     // 非法 ID 应被 validate 移除，合法的保留
     let _v = Vocab::load_from_str(sample_yaml()).unwrap();
@@ -67,4 +138,74 @@ fn validate_rejects_wrong_sense() {
     assert_eq!(result.cleaned.visual_ids.len(), 0);
     assert_eq!(result.stripped, vec!["auditory.footsteps"]);
     assert!(result.all_empty);
+}
+
+#[test]
+fn loads_and_validates_new_categories() {
+    // emotion/gesture/atmosphere 三个新类别:加载、候选集、校验全链路
+    let yaml = r#"
+emotion:
+  hlm-c001-01:
+    text: "满纸荒唐言，一把辛酸泪"
+    tags: ["hlm", "sorrow"]
+gesture:
+  zhz-c003-02:
+    text: "她用帕子不断擦拭着脸上的泪水"
+    tags: ["zhz", "sorrow"]
+atmosphere:
+  hlm-c005-03:
+    text: "香烟缭绕，花影缤纷"
+    tags: ["hlm", "indoor"]
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    assert!(v.has("emotion", "hlm-c001-01"));
+    assert!(v.has("gesture", "zhz-c003-02"));
+    assert!(v.has("atmosphere", "hlm-c005-03"));
+
+    let set = v.candidate_set(&[]);
+    assert_eq!(set.len(), 3);
+
+    let mut sel = SensorySelection::default();
+    sel.emotion_ids
+        .push(VocabularyId::new("emotion.hlm-c001-01").unwrap());
+    sel.gesture_ids
+        .push(VocabularyId::new("emotion.hlm-c001-01").unwrap()); // 跨类别,应剥离
+    let result = validate(&sel, &set);
+    assert_eq!(result.cleaned.emotion_ids.len(), 1);
+    assert!(result.cleaned.gesture_ids.is_empty());
+    assert_eq!(result.stripped, vec!["emotion.hlm-c001-01"]);
+    assert!(!result.all_empty);
+}
+
+#[test]
+fn merge_overlays_distilled_vocab() {
+    // merge 把蒸馏素材库叠加到基础词库,两边条目都可见
+    let mut base = Vocab::load_from_str(sample_yaml()).unwrap();
+    let distilled = Vocab::load_from_str(
+        r#"
+emotion:
+  zhz-c001-01:
+    text: "这一分别，我从此便生活在深宫之中"
+    tags: ["zhz"]
+"#,
+    )
+    .unwrap();
+    base.merge(distilled);
+    assert!(base.has("visual", "bloodstain"));
+    assert!(base.has("emotion", "zhz-c001-01"));
+    assert_eq!(base.candidate_set(&[]).len(), 3);
+}
+
+#[test]
+fn load_runtime_vocab_merges_base_and_distilled_fixture() {
+    use novels::vocab::load_runtime_vocab;
+    use std::path::Path;
+
+    let base = Path::new("assets/vocab.yaml");
+    // 目录接口：fixture 放在 tests/fixtures/distilled_dir/
+    let (v, report) =
+        load_runtime_vocab(base, Some(Path::new("tests/fixtures/distilled_dir"))).unwrap();
+    assert!(v.has("visual", "bloodstain")); // base
+    assert!(v.has("emotion", "hlm-c001-01") || report.distilled_files >= 1);
+    assert!(report.total_entries > report.base_entries);
 }

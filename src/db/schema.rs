@@ -68,11 +68,34 @@ CREATE TABLE IF NOT EXISTS character_sensations (
     olfactory_ids_json TEXT NOT NULL,
     tactile_ids_json TEXT NOT NULL,
     gustatory_ids_json TEXT NOT NULL,
+    emotion_ids_json TEXT NOT NULL DEFAULT '[]',
+    gesture_ids_json TEXT NOT NULL DEFAULT '[]',
+    atmosphere_ids_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
     FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sensations_character ON character_sensations(character_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS character_plot_developments (
+    id TEXT PRIMARY KEY,
+    character_id TEXT NOT NULL,
+    scene_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
+    FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_plot_developments_character_scene
+    ON character_plot_developments(character_id, scene_id);
+CREATE TABLE IF NOT EXISTS character_derivation_context_tags (
+    character_id TEXT NOT NULL,
+    scene_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (character_id, scene_id, tag),
+    FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
+    FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+);
 "#;
 
 /// 执行数据库迁移
@@ -81,5 +104,34 @@ CREATE INDEX IF NOT EXISTS idx_sensations_character ON character_sensations(char
 /// 未来可替换为 sqlx::migrate! 的 SQL 文件迁移。
 pub async fn migrate(pool: &sqlx::sqlite::SqlitePool) -> Result<(), crate::models::StoryError> {
     sqlx::query(SCHEMA_SQL).execute(pool).await?;
+    ensure_sensation_dimension_columns(pool).await?;
+    Ok(())
+}
+
+async fn ensure_sensation_dimension_columns(
+    pool: &sqlx::sqlite::SqlitePool,
+) -> Result<(), crate::models::StoryError> {
+    let columns = sqlx::query("PRAGMA table_info(character_sensations)")
+        .fetch_all(pool)
+        .await?;
+    let existing: std::collections::HashSet<String> = columns
+        .iter()
+        .map(|row| sqlx::Row::try_get(row, "name"))
+        .collect::<Result<_, _>>()?;
+
+    for column in [
+        "emotion_ids_json",
+        "gesture_ids_json",
+        "atmosphere_ids_json",
+    ] {
+        if !existing.contains(column) {
+            sqlx::query(&format!(
+                "ALTER TABLE character_sensations ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'"
+            ))
+            .execute(pool)
+            .await?;
+        }
+    }
+
     Ok(())
 }

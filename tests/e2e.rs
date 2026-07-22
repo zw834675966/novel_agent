@@ -7,8 +7,9 @@
 //   - 推导结果能正确持久化到数据库
 
 use novels::db::Db;
-use novels::llm::{LlmCharacterDerivation, MockSenseGenerator};
+use novels::llm::{LlmCharacterDerivation, LlmContextTagSelection, MockSenseGenerator};
 use novels::models::*;
+use novels::prose::MockProseGenerator;
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
 use std::sync::Arc;
@@ -30,8 +31,16 @@ async fn end_to_end_with_mock() {
         },
         plot_development: vec![],
     };
-    let generator = Arc::new(MockSenseGenerator::new(canned));
-    let svc = StoryService::new(db.clone(), vocab, generator);
+    let generator = Arc::new(MockSenseGenerator::new(
+        LlmContextTagSelection::default(),
+        canned,
+    ));
+    let svc = StoryService::new(
+        db.clone(),
+        vocab,
+        generator,
+        Arc::new(MockProseGenerator::fallback()),
+    );
 
     let cid = CharacterId(uuid::Uuid::new_v4());
     db.characters()

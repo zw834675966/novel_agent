@@ -1,0 +1,8 @@
+emotion:
+  hlm-c001-01:
+    text: "心中无限凄凉"
+    tags: ["hlm", "哀伤"]
+gesture:
+  hlm-c001-02:
+    text: "不禁落下泪来"
+    tags: ["hlm", "落泪"]

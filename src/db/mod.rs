@@ -13,6 +13,7 @@
 mod character_repo; // 角色 CRUD（包含性格标签 & 技能标签子表）
 mod derivation_repo; // 推导结果写入（SensorySelection + CharacterMemory 跨表事务）
 mod memory_repo; // 角色记忆查询 & 插入
+mod plot_repo; // 剧情发展查询 & 事务内插入
 mod scene_repo; // 场景 CRUD & 参与者关系
 mod schema; // DDL 定义 & 迁移
 mod sensation_repo; // 五感数据查询 & 插入
@@ -20,6 +21,7 @@ mod sensation_repo; // 五感数据查询 & 插入
 pub use character_repo::CharacterRepo;
 pub use derivation_repo::DerivationRepo;
 pub use memory_repo::MemoryRepo;
+pub use plot_repo::PlotRepo;
 pub use scene_repo::SceneRepo;
 pub use schema::migrate;
 pub use sensation_repo::SensationRepo;
@@ -85,5 +87,8 @@ impl Db {
     }
     pub fn derivations(&self) -> DerivationRepo {
         DerivationRepo::new(self.pool.clone())
+    }
+    pub fn plots(&self) -> PlotRepo {
+        PlotRepo::new(self.pool.clone())
     }
 }

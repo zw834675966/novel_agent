@@ -2,7 +2,12 @@
 // =================
 // 测试 VocabularyId 的序列化/反序列化和格式校验逻辑。
 
+use chrono::Utc;
+use novels::llm::LlmContextTagSelection;
 use novels::models::*;
+use novels::models::{
+    CharacterId, PlotDevelopment, PlotDevelopmentKind, SceneId, StoredPlotDevelopment,
+};
 
 #[test]
 fn vocabulary_id_roundtrip() {
@@ -26,4 +31,43 @@ fn vocabulary_id_rejects_empty_segment() {
     // '.' 前后有空段的格式应被拒绝
     assert!(VocabularyId::new(".foo").is_err());
     assert!(VocabularyId::new("foo.").is_err());
+}
+
+#[test]
+fn stored_plot_development_keeps_narrative_identity() {
+    let stored = StoredPlotDevelopment {
+        character_id: CharacterId(uuid::Uuid::new_v4()),
+        scene_id: SceneId(uuid::Uuid::new_v4()),
+        development: PlotDevelopment {
+            kind: PlotDevelopmentKind::SuspicionRaised,
+            reason: "the witness changed their story".into(),
+        },
+        created_at: Utc::now(),
+    };
+
+    assert_eq!(stored.development.reason, "the witness changed their story");
+}
+
+#[test]
+fn context_tag_selection_deserializes_empty_tags() {
+    let selected: LlmContextTagSelection = serde_json::from_str(r#"{"tags":[]}"#).unwrap();
+    assert!(selected.tags.is_empty());
+}
+
+#[test]
+fn sensory_selection_deserializes_legacy_five_dimension_payloads() {
+    let selection: SensorySelection = serde_json::from_str(
+        r#"{
+            "visual_ids": [],
+            "auditory_ids": [],
+            "olfactory_ids": [],
+            "tactile_ids": [],
+            "gustatory_ids": []
+        }"#,
+    )
+    .unwrap();
+
+    assert!(selection.emotion_ids.is_empty());
+    assert!(selection.gesture_ids.is_empty());
+    assert!(selection.atmosphere_ids.is_empty());
 }

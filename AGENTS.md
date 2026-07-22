@@ -31,6 +31,23 @@
   （无 API Key 时静默降级为 Mock 生成器，不崩溃。）
 - DB path: `novels.db` (SQLite, auto-created on first run).
   （数据库路径：novels.db，SQLite，首次运行自动创建。）
+- Vocabulary bootstrap: load `assets/vocab.yaml`, then merge `assets/distilled/` when that directory exists.
+  （词库引导：先加载 `assets/vocab.yaml`，若存在 `assets/distilled/` 则合并。）
+
+### Distilled vocabulary (optional)（可选蒸馏词库）
+
+- Default runtime: load `assets/vocab.yaml` then merge `assets/distilled/` if present.
+  （默认运行时：加载 base 词库，若存在则合并 `assets/distilled/`。）
+- Skip distilled merge: `NOVELS_SKIP_DISTILLED=1` (or `true`).
+  （跳过蒸馏合并：`NOVELS_SKIP_DISTILLED=1`。）
+- Override distilled dir: `NOVELS_DISTILLED_DIR=path` (must be an existing directory).
+  （覆盖蒸馏目录：`NOVELS_DISTILLED_DIR=path`，须为已存在目录。）
+- Candidate caps (deterministic top-k): 24 per sense / 96 total; tags sent to LLM capped at 80.
+  （候选硬顶：每感官类最多 24、总计最多 96；进入 LLM 的 tags 最多 80。）
+- Quality report: `python tools/distill_quality_report.py`
+  （质量报告：`python tools/distill_quality_report.py`。）
+- Never commit secrets; treat `corpus/` and `assets/distilled/` as local copyrighted material (do not commit unless explicitly approved).
+  （勿提交密钥；`corpus/` 与 `assets/distilled/` 视为本地版权素材，未经明确批准勿提交。）
 
 ## Architecture（架构）
 
@@ -70,8 +87,9 @@ src/
 │   ├── mod.rs      # pub use StoryService
 │   └── service.rs  # 场景创建/角色推导/批量推导
 └── vocab/          # 感官词库层
-    ├── mod.rs      # pub use Vocab + validate
-    ├── loader.rs   # YAML 加载 + 候选集生成
+    ├── mod.rs      # pub use Vocab + validate + load_runtime_vocab
+    ├── bootstrap.rs # 运行时：base + 可选 distilled 目录合并
+    ├── loader.rs   # YAML 加载 + 候选集生成（含 top-k caps）
     └── validate.rs # LLM 输出校验（过滤非法词汇）
 
 tests/
@@ -79,10 +97,11 @@ tests/
 ├── e2e.rs          # 端到端测试（Mock LLM）
 ├── models_test.rs  # VocabularyId 单元测试
 ├── scene_test.rs   # StoryService 单元测试
-└── vocab_test.rs   # 词库加载/校验测试
+└── vocab_test.rs   # 词库加载/校验/bootstrap 测试
 
 assets/
-└── vocab.yaml      # 五感词汇定义（visual/auditory/olfactory/tactile/gustatory）
+├── vocab.yaml      # 五感词汇定义（visual/auditory/olfactory/tactile/gustatory）
+└── distilled/      # 可选本地蒸馏词库目录（默认运行时合并，若存在）
 ```
 
 ## Design Patterns（设计模式）
@@ -200,3 +219,165 @@ Five categories (五类): visual, auditory, olfactory, tactile, gustatory.
   （lance 相关 crate 需要 protoc。安装到指定路径并设置环境变量。）
 - If not using lancedb features, removing `rig-lancedb` from Cargo.toml eliminates the protoc requirement.
   （如不使用 lance 功能，移除 rig-lancedb 依赖可避免 protoc 要求。）
+
+## AI Maintenance Playbook（AI 维护手册）
+
+### Start Here（开始前）
+
+Before changing code:
+
+1. Read this file, then inspect the owning module and its matching integration test.
+2. Run `git status --short`; treat every unrelated modified or untracked path as user work. Do not revert, stage, delete, or reformat it.
+3. Confirm whether the requested behavior is already specified by a model type, repository method, service flow, LLM contract, vocabulary fixture, or test.
+4. Keep changes within the narrowest owning layer. Cross a layer only when the public contract requires it.
+
+Authoritative sources, in priority order:
+
+- `AGENTS.md` defines repository constraints, architecture, runtime wiring, and known baseline failures.
+- `src/` defines current runtime behavior.
+- `tests/` defines observable regression contracts.
+- `Cargo.toml` defines supported dependencies and binary targets.
+- `assets/vocab.yaml` is the committed base vocabulary. Optional corpus or distillation material, if present, is local user work rather than baseline repository behavior.
+
+### Task Playbooks（任务手册）
+
+#### Domain Models and IDs（领域模型与 ID）
+
+Owns: `src/models/` and `src/models/mod.rs`.
+
+- Put pure domain structures, enums, and typed IDs in `src/models/`; keep persistence and orchestration out of model files.
+- Use `CharacterId`, `SceneId`, `MemoryId`, and `VocabularyId` instead of raw IDs at public boundaries.
+- Preserve `VocabularyId` format `sense.key`; validate vocabulary identity before persistence or selection.
+- When a model changes, update affected repository serialization, service construction, LLM contract conversion, and focused tests in `tests/models_test.rs`, `tests/db_test.rs`, `tests/scene_test.rs`, or `tests/vocab_test.rs`.
+- Checks: Run `cargo test --test models_test` for typed-ID changes; run affected repository, scene, or vocabulary tests when a model change crosses those existing contracts.
+- Boundary: Do not expand model-only work into repository, service, LLM, or vocabulary changes unless an explicit user request requires the affected contract; preserve typed IDs and `VocabularyId` validation.
+
+#### Database and Repositories（数据库与仓储）
+
+Owns: `src/db/schema.rs`, `src/db/*_repo.rs`, and `src/db/mod.rs`.
+
+- Add schema changes through `migrate()`; preserve foreign keys and existing `ON DELETE CASCADE` behavior.
+- Keep entity-specific queries in their repository factory returned by `Db`.
+- Use `DerivationRepo::insert_derivation()` for sensation plus memory writes that must remain atomic. Do not split its transaction into independent writes.
+- Keep timestamps and IDs stored as documented text values.
+- Verify with the relevant in-memory SQLite test in `tests/db_test.rs`; use `Db::open_in_memory()` for new database tests.
+- Checks: Run `cargo test --test db_test`, including `derivation_tx_atomic_on_memory_failure` when changing derivation persistence.
+- Boundary: Do not change schema, repository ownership, foreign keys, cascade behavior, or transaction boundaries outside an explicit user request; preserve atomic sensation-plus-memory writes.
+
+#### Scene Orchestration（场景推导）
+
+Owns: `src/scene/service.rs` and `src/scene/mod.rs`.
+
+- `StoryService` validates scene existence, character existence, and scene participation before derivation.
+- Derivation context includes recent memories, prior sensation continuity, vocabulary candidates, and current scene details.
+- Preserve validation-and-retry behavior: invalid LLM selections are filtered, an all-empty valid selection is retried once, and a second all-empty result returns `StoryError`.
+- `derive_scene()` limits concurrent character derivation to four; do not replace bounded concurrency with unbounded fan-out.
+- Extend `tests/scene_test.rs` for service behavior and `tests/e2e.rs` for end-to-end mock-generator flows.
+- Checks: Run `cargo test --test scene_test`; run `cargo test --test e2e` for flows spanning service, generator, validation, and persistence.
+- Boundary: Do not broaden scene orchestration into generator, repository, or vocabulary redesign without an explicit user request; preserve prerequisite validation, retry semantics, and concurrency limit of four.
+
+#### LLM Contracts and Generators（LLM 契约与生成器）
+
+Owns: `src/llm/contract.rs`, `src/llm/generator.rs`, `src/llm/rig_impl.rs`, `src/llm/mock.rs`, and `src/llm/mod.rs`.
+
+- `SenseGenerator` is the abstraction boundary. Production behavior uses `RigSenseGenerator`; deterministic tests use `MockSenseGenerator` injected as `Arc<dyn SenseGenerator>`.
+- Keep structured output types in `contract.rs` compatible with `schemars::JsonSchema` and serde derivation required by Rig extraction.
+- Do not use an OpenAI compatibility layer; production provider is `rig::providers::deepseek` and model constant is `deepseek::DEEPSEEK_V4_FLASH`.
+- When an LLM output field changes, update the contract, `DerivationRequest` context if needed, both generator implementations, validation, persistence mapping, and every fixture constructing `LlmCharacterDerivation`.
+- Checks: Run `cargo test --test scene_test` and `cargo test --test e2e` after contract or generator changes to exercise mock-backed derivation flows.
+- Boundary: Do not replace `SenseGenerator`, change provider or model selection, or alter unrelated scene, persistence, or vocabulary behavior without an explicit user request; preserve production DeepSeek wiring and deterministic mock injection.
+
+#### Vocabulary and Validation（词库与校验）
+
+Owns: `assets/vocab.yaml`, `src/vocab/bootstrap.rs`, `src/vocab/loader.rs`, `src/vocab/validate.rs`, and `src/vocab/mod.rs`.
+
+- Base vocabulary contains five categories: `visual`, `auditory`, `olfactory`, `tactile`, and `gustatory`.
+- A vocabulary entry is keyed as `<sense>.<key>` and contains display `text` plus `tags`.
+- Runtime load path is `load_runtime_vocab(base, distilled_dir?)` in `bootstrap.rs`: base YAML, optional merge of a distilled directory.
+- Keep YAML loading and candidate generation in `loader.rs`; keep LLM output filtering in `validate.rs`.
+- Preserve deterministic candidate/tag caps: `DEFAULT_PER_SENSE_CAP=24`, `DEFAULT_TOTAL_CAP=96`, `DEFAULT_TAG_CAP=80`.
+- Preserve the guardrail that only vocabulary-backed selections survive validation.
+- Test parser, candidate, bootstrap merge, and invalid-selection behavior in `tests/vocab_test.rs`.
+- Checks: Run `cargo test --test vocab_test` after vocabulary loader, validation, bootstrap, or committed base vocabulary changes.
+- Boundary: Do not expand base-vocabulary work into optional corpus or distillation assets, generator behavior, or persistence changes without an explicit user request; preserve five senses, caps, and vocabulary-backed validation.
+
+#### Corpus Distillation（语料蒸馏）
+
+Optional local assets only, possibly uncommitted: `src/bin/distill.rs`, `tools/extract_corpus.py`, `tools/distill_langextract.py`, `tools/validate_fragments.py`, `tools/verify_distilled.py`, `tools/distill_quality_report.py`, `corpus/`, and `assets/distilled/`. Distilled YAML is local material; runtime may merge it when present (see Distilled vocabulary above).
+
+- Before editing these paths or running their commands, confirm each required path exists and get explicit user instruction.
+- If present, treat `corpus/<book>/cNNN.txt` as source material. Never rewrite it unless the task explicitly changes corpus extraction.
+- If `src/bin/distill.rs` is present and the user explicitly requests local distillation, it requires `DEEPSEEK_API_KEY` and runs as `cargo run --bin distill -- <book> <start_chap> <end_chap>`.
+- If that local tool is present, it writes `assets/distilled/<book>-cNNN.yaml` and skips a chapter output that already exists; do not overwrite generated material without explicit instruction.
+- Local output fragments must be continuous source-text substrings after whitespace normalization. The generator locates and classifies; it must not invent or rewrite prose.
+- For explicitly approved local workflows, validate generated entries and report KPIs before treating them as usable vocabulary:
+
+```powershell
+python tools/validate_fragments.py
+python tools/verify_distilled.py
+python tools/distill_quality_report.py
+```
+
+- `python tools/validate_fragments.py --prune` rewrites local generated files when that tool is present. Run it only with explicit approval after inspecting reported invalid entries.
+- Checks: Only when optional local tools/assets are present and the user requests distillation work, run `python tools/validate_fragments.py`, `python tools/verify_distilled.py`, and optionally `python tools/distill_quality_report.py`; exclude `--prune` because it rewrites files.
+- Boundary: Do not create, edit, delete, move, or regenerate optional local `src/bin/distill.rs`, `tools/`, `corpus/`, or `assets/distilled/` paths unless the user explicitly requests that local workflow. Preserve source-text provenance and do not treat these paths as committed baseline.
+
+### Runtime Operations（运行操作）
+
+Run from repository root:
+
+```powershell
+cargo run
+```
+
+- `src/main.rs` loads `.env` through `dotenv::dotenv().ok()`.
+- With `DEEPSEEK_API_KEY`, it constructs `RigSenseGenerator` and calls DeepSeek.
+- Without the key, it prints a warning and uses `MockSenseGenerator`; this path must remain runnable for local development and tests.
+- `novels.db` is created or reused in the repository root.
+- Vocabulary: `load_runtime_vocab` loads `assets/vocab.yaml`, then merges `assets/distilled/` when present unless `NOVELS_SKIP_DISTILLED=1`; override dir with `NOVELS_DISTILLED_DIR`.
+
+### Quality Gates（质量门禁）
+
+Use the narrowest relevant test during development, then run applicable repository checks:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --all-targets
+cargo test --all-targets
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+- Model or vocabulary changes: run the matching `tests/models_test.rs` or `tests/vocab_test.rs` test filter, then full tests when practical.
+- Repository or schema changes: run matching `tests/db_test.rs` filter, then full tests when practical.
+- Service or LLM-flow changes: run matching `tests/scene_test.rs` or `tests/e2e.rs` filter, then full tests when practical.
+- Documentation-only changes: run `cargo fmt --all -- --check` and inspect Markdown headings and commands; no behavior test is required.
+- On Windows, Lance 7.0.0 build-script failure can occur before this crate compiles. Compare failure output with the known baseline before attributing it to a change. `protoc` is expected at `C:\Tools\protoc\bin\protoc.exe` when Lance dependencies are built.
+
+### Data and Safety Rules（数据与安全规则）
+
+- Never add `.env`, API keys, tokens, or source credentials to Git or documentation.
+- Do not infer an active LanceDB or vector-store feature solely because `rig-lancedb` appears in dependency history.
+- Do not delete, move, reformat, or regenerate local `corpus/`, `assets/distilled/`, `temp/`, or unrelated worktree files when present without explicit user instruction.
+- Keep locally generated vocabulary traceable to its corpus chapter. Validate text provenance before merging or committing generated YAML.
+- Do not run destructive Git commands such as `git reset --hard` or `git checkout --` unless explicitly approved.
+
+### Change Checklist（变更检查表）
+
+Before completing a task, verify:
+
+1. The changed file belongs to the intended layer.
+2. Public model, repository, service, LLM, vocabulary, and persistence contracts changed together where required.
+3. A behavior change has a focused regression test using the established test module.
+4. Mock LLM fixtures still construct every required contract field.
+5. Database multi-write behavior remains transactional.
+6. LLM-selected vocabulary still passes `validate_selection()` before storage.
+7. Formatting, targeted tests, and applicable quality gates have evidence or a documented baseline blocker.
+8. Git staging contains only intended files and no credentials or generated assets outside requested scope.
+
+### Troubleshooting（故障处理）
+
+- `DEEPSEEK_API_KEY` missing during `cargo run`: expected fallback to the mock generator.
+- Optional local corpus or distillation paths absent: expected on a clean checkout. If present as untracked user assets, do not edit or run them without explicit instruction.
+- Invalid or empty LLM sensory output: inspect vocabulary IDs and `validate_selection()` behavior before changing retry or persistence code.
+- Database consistency concern: inspect `src/db/derivation_repo.rs`; do not add independent sensation and memory writes around the existing transaction.
+- Windows build fails in Lance tooling before crate compilation: verify `$env:PROTOC` points to `C:\Tools\protoc\bin\protoc.exe`, then compare the failure with the known baseline before editing application code.
