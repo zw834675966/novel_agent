@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
+use super::ids::{RelationshipCandidateId, RelationshipFactId};
 use super::{CharacterId, MemoryId, SceneId, StoryError};
 
 /// 关系类型枚举
@@ -35,14 +35,6 @@ impl CandidateStatus {
         )
     }
 }
-
-/// 关系事实 ID（UUID newtype）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RelationshipFactId(pub Uuid);
-
-/// 关系候选 ID（UUID newtype）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RelationshipCandidateId(pub Uuid);
 
 /// 关系事实（持久化）
 #[derive(Debug, Clone)]
@@ -131,7 +123,9 @@ pub struct GraphEdge {
 
 /// 验证分数（0-100）
 pub fn validate_score(score: Option<u8>) -> Result<(), StoryError> {
-    if let Some(s) = score && s > 100 {
+    if let Some(s) = score
+        && s > 100
+    {
         return Err(StoryError::InvalidRelationshipCandidate(format!(
             "score {s} exceeds maximum 100"
         )));

@@ -96,6 +96,58 @@ CREATE TABLE IF NOT EXISTS character_derivation_context_tags (
     FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
     FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS relationship_facts (
+    id TEXT PRIMARY KEY,
+    from_character_id TEXT NOT NULL,
+    to_character_id TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL CHECK (created_by = 'author'),
+    UNIQUE(from_character_id, to_character_id, relationship_type),
+    FOREIGN KEY (from_character_id) REFERENCES characters(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_character_id) REFERENCES characters(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS relationship_revisions (
+    id TEXT PRIMARY KEY,
+    relationship_fact_id TEXT NOT NULL,
+    scene_id TEXT NOT NULL,
+    valid_from_scene_id TEXT NOT NULL,
+    valid_until_scene_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
+    summary TEXT NOT NULL,
+    tension_score INTEGER,
+    trust_score INTEGER,
+    affection_score INTEGER,
+    power_score INTEGER,
+    evidence_memory_id TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (relationship_fact_id) REFERENCES relationship_facts(id) ON DELETE CASCADE,
+    FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+    FOREIGN KEY (evidence_memory_id) REFERENCES character_memories(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_relationship_revisions_fact ON relationship_revisions(relationship_fact_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS relationship_candidates (
+    id TEXT PRIMARY KEY,
+    scene_id TEXT NOT NULL,
+    from_character_id TEXT NOT NULL,
+    to_character_id TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    tension_score INTEGER,
+    trust_score INTEGER,
+    affection_score INTEGER,
+    power_score INTEGER,
+    evidence_memory_id TEXT,
+    confidence REAL NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected')),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+    FOREIGN KEY (from_character_id) REFERENCES characters(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_character_id) REFERENCES characters(id) ON DELETE CASCADE,
+    FOREIGN KEY (evidence_memory_id) REFERENCES character_memories(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_relationship_candidates_scene ON relationship_candidates(scene_id, status);
 "#;
 
 /// 执行数据库迁移
