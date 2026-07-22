@@ -10,7 +10,7 @@
 // 公共 API:LlmNarrative / NarrativeBeat / NarrateRequest /
 //   ProseCandidate / CharacterProseCandidates / ProseGenerator /
 //   MockProseGenerator / AssembledProse。
-// crate 私有:assemble(以 AssembledProse::assemble 关联函数暴露)、
+// crate 私有:AssembledProse::assemble、
 //   candidate_refs_for。
 
 mod assembly; // 按 ID 拉取片段 + 按类别拼装正文 + ref 校验

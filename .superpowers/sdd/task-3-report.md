@@ -95,3 +95,22 @@ All 59 tests pass across 7 test binaries; fmt/check/clippy clean.
 
 ### Scope
 Staged files (Task 3 fix only): `src/main.rs`, `src/prose/mod.rs`, `src/prose/rig_impl.rs`, `src/scene/service.rs`. Unrelated dirty/ untracked paths (Cargo.toml, src/models/*, src/vocab/loader.rs, tests/vocab_test.rs, corpus/, assets/distilled/, tools/, src/bin/, etc.) left untouched per preserve-user-work rule.
+
+---
+
+## Final Review Fix: Hide Assembly Provenance
+
+### Change
+- Changed `AssembledProse::assemble` to `pub(crate)`, leaving `AssembledProse` public as the `StoryService::narrate_scene` result type.
+- Kept assembly entry out of `src/prose/mod.rs` public re-exports; external callers can no longer supply arbitrary vocabulary, derivations, or participants.
+- Moved direct assembly coverage from `tests/prose_test.rs` into `src/prose/assembly.rs` unit tests.
+- Preserved assembly coverage for all eight category order, beat order, unknown/malformed refs, cross-character refs, missing vocabulary, non-participant POV, missing-derivation POV, empty refs/action-only degradation, all-invalid/action-only degradation, and empty-beats hard error.
+- Kept `tests/prose_test.rs` service-level only; successful assembly is exercised through `StoryService::narrate_scene`.
+
+### Verification
+- `cargo test --lib prose::assembly::tests`: 10 passed, 0 failed.
+- `cargo test --test prose_test`: 4 passed, 0 failed.
+- `cargo fmt --all -- --check`: clean.
+- `cargo test --all-targets`: 60 passed across 10 suites, 0 failed.
+- `cargo check --all-targets`: clean.
+- `cargo clippy --all-targets --all-features -- -D warnings`: clean.
