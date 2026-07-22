@@ -1,5 +1,7 @@
 # 原素材填充写作：论文线 + GitHub 主流做法研究（反 AI 味 / 反 AI 因果）
 
+> ⚠️ **已并入权威全文** [`2026-07-22-original-fill-soul-research.md`](./2026-07-22-original-fill-soul-research.md)（含核心结论 §0、AEVS/VeriCite 补全、研究->代码落地状态 §5a）。本文件保留作历史快照，不再更新；以权威全文 + `novels-conclusion-critique` + 代码为准。
+
 > Superpowers research · 2026-07-22  
 > 目标：用**原著连续片段填充**（verbatim fill），让生成有「灵魂」，并压制 **AI 味** 与 **AI 因果逻辑**。  
 > 证据日志：scratch `research-sources.md`（会话 goal 目录）  

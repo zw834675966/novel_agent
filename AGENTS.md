@@ -44,10 +44,12 @@
   （覆盖蒸馏目录：`NOVELS_DISTILLED_DIR=path`，须为已存在目录。）
 - Candidate caps: 24 per sense / 96 total; tags sent to LLM capped at 80.
   （候选硬顶：每感官类最多 24、总计最多 96；进入 LLM 的 tags 最多 80。）
-- Ranking (P0 anti-AI): `candidates_ranked_limited` scores by selected tags + lexical overlap with character name / scene event / tags (not pure dictionary order). Plan: `docs/superpowers/plans/2026-07-22-anti-ai-retrieve-action-p0.md`.
-  （排序：按标签命中 + 角色名/场景/query 词面重叠打分，非纯字典序截断。）
-- Free-text guard (`text_guard`): causal-filler strip + length caps for **action** (80), **memory** (120), **plot reason** (60); `quote_density()` on assemble.
-  （自由文本护栏：action/记忆/情节 reason 剥套话并限长；拼装输出 quote density。）
+- Ranking (anti-AI retrieve): `candidates_ranked_limited` uses **BM25** over candidate `text`+tags (whole-term substring TF, IDF, k1=1.2/b=0.75) plus selected-tag and exact name-tag voice boosts; deterministic score DESC → SENSES → id. Plan: P0 `docs/superpowers/plans/2026-07-22-anti-ai-retrieve-action-p0.md`; BM25+provenance follow-up in research §5a.
+  （排序：候选池 BM25 + 标签/声口加权，非纯字典序或布尔包含。）
+- Free-text guard (`text_guard`): causal-filler strip + length caps for **action** (80), **memory** (120), **plot reason** (60).
+  （自由文本护栏：action/记忆/情节 reason 剥套话并限长。）
+- Assemble verify: `AssembledProse` post-checks each injected quote appears in final `text` (`unverified_quotes`); `ProseQualityReport` aggregates quote_density / action_only_rate / stripped_ref_rate / low_quote_density (`MIN_QUOTE_DENSITY=0.30`, flag only — no hard fail).
+  （装配后回源重扫 + 质量报告；低 density 仅标志不报错。）
 - Tag shortlist: `known_tags_ranked_limited` ranks by scene/character query before cap 80; candidate score boosts exact name tags (voice isolation).
   （tag 短名单按场景/角色相关排序；候选对角色名 tag 强加权以减轻声口串味。）
 - Quality report: `python tools/distill_quality_report.py`

@@ -234,6 +234,9 @@ async fn narration_returns_source_text_and_quality_counters() {
     assert!(prose.text.contains("她俯身查看。"));
     assert_eq!(prose.stripped_refs, 1);
     assert_eq!(prose.action_only_beats, 1);
+    assert_eq!(prose.unverified_quotes, 0);
+    assert_eq!(prose.quality.unverified_quotes, 0);
+    assert!((prose.quality.quote_density - prose.quote_density()).abs() < 1e-9);
 }
 
 /// 闭环烟雾:base vocab merge 蒸馏 emotion 片段后,拼装正文解析出原著句。

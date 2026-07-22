@@ -5,11 +5,30 @@ use crate::vocab::Vocab;
 
 use super::contract::LlmNarrative;
 
+/// Minimum quote density before [`ProseQualityReport::low_quote_density`] is set.
+/// Observational only — does not fail assemble (mock/action-only flows may sit below this).
+pub const MIN_QUOTE_DENSITY: f64 = 0.30;
+
+/// Aggregated quality KPIs for a single assemble (VeriCite-style post-gen observability).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProseQualityReport {
+    pub quote_density: f64,
+    /// `action_only_beats / accepted_beats` (0 if no accepted beats).
+    pub action_only_rate: f64,
+    /// `stripped_refs / total_refs_seen` (0 if no refs seen).
+    pub stripped_ref_rate: f64,
+    /// Injected quote texts not found in final `text` after assemble (should be 0).
+    pub unverified_quotes: usize,
+    /// `quote_density < MIN_QUOTE_DENSITY`.
+    pub low_quote_density: bool,
+}
+
 /// 拼装结果:正文 + 剥离/拒绝/动作-唯一计数 + quote density 可观测
 /// ================================================================
 /// `action_only_beats` 统计"被接受但描写为空、只输出 action"的 beat 数。
 /// `quote_chars` / `total_chars` 用于 quote density（原著描写占比）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `unverified_quotes` / `quality`：装配后回源重扫 + 聚合 KPI。
+#[derive(Debug, Clone, PartialEq)]
 pub struct AssembledProse {
     pub text: String,
     pub stripped_refs: usize,
@@ -19,6 +38,10 @@ pub struct AssembledProse {
     pub quote_chars: usize,
     /// Total characters in final `text` (including actions and newlines).
     pub total_chars: usize,
+    /// Post-assemble provenance failures (injected text missing from final body).
+    pub unverified_quotes: usize,
+    /// Aggregated KPIs (density, rates, density threshold flag).
+    pub quality: ProseQualityReport,
 }
 
 impl AssembledProse {
@@ -47,6 +70,7 @@ impl AssembledProse {
     ///   6. 被接受的 beat 若描写为空但 action 非空 -> `action_only_beats`++
     ///   7. action 经 [`Self::sanitize_action`] 后输出
     ///   8. 所有被接受的非空 beat 用单个 `\n` 连接
+    ///   9. 装配后对每条注入 quote 做 `text.contains` 回源重扫 → `unverified_quotes`
     pub(crate) fn assemble(
         narrative: &LlmNarrative,
         vocab: &Vocab,
@@ -69,6 +93,9 @@ impl AssembledProse {
         let mut rejected = 0usize;
         let mut action_only = 0usize;
         let mut quote_chars = 0usize;
+        let mut accepted_beats = 0usize;
+        let mut total_refs_seen = 0usize;
+        let mut injected_quotes: Vec<String> = Vec::new();
 
         for beat in &narrative.beats {
             let Beat { pov, action, refs } = unpack_beat(beat);
@@ -84,9 +111,11 @@ impl AssembledProse {
                     continue;
                 }
             };
-            let (desc, stripped) = assemble_beat_descriptions(&refs, vocab, &allowed);
+            total_refs_seen += refs.len();
+            let (desc, stripped, quotes) = assemble_beat_descriptions(&refs, vocab, &allowed);
             total_stripped += stripped;
             quote_chars += desc.chars().count();
+            injected_quotes.extend(quotes);
 
             let action = Self::sanitize_action(&action);
             let para = if desc.is_empty() {
@@ -97,6 +126,8 @@ impl AssembledProse {
             } else {
                 format!("{desc}{action}")
             };
+            // Count accepted beats that contribute to output (or empty accepted with empty action).
+            accepted_beats += 1;
             if !para.trim().is_empty() {
                 paragraphs.push(para);
             }
@@ -104,6 +135,31 @@ impl AssembledProse {
 
         let text = paragraphs.join("\n");
         let total_chars = text.chars().count();
+        // Post-assemble provenance: every injected quote must appear in final body.
+        let unverified_quotes = injected_quotes
+            .iter()
+            .filter(|q| !q.is_empty() && !text.contains(q.as_str()))
+            .count();
+        let quote_density = if total_chars == 0 {
+            0.0
+        } else {
+            quote_chars as f64 / total_chars as f64
+        };
+        let quality = ProseQualityReport {
+            quote_density,
+            action_only_rate: if accepted_beats == 0 {
+                0.0
+            } else {
+                action_only as f64 / accepted_beats as f64
+            },
+            stripped_ref_rate: if total_refs_seen == 0 {
+                0.0
+            } else {
+                total_stripped as f64 / total_refs_seen as f64
+            },
+            unverified_quotes,
+            low_quote_density: quote_density < MIN_QUOTE_DENSITY,
+        };
         Ok(Self {
             text,
             stripped_refs: total_stripped,
@@ -111,6 +167,8 @@ impl AssembledProse {
             action_only_beats: action_only,
             quote_chars,
             total_chars,
+            unverified_quotes,
+            quality,
         })
     }
 }
@@ -131,14 +189,15 @@ pub(crate) fn candidate_refs_for(derivation: &CharacterDerivation) -> HashSet<St
         .collect()
 }
 
-/// 按类别有序拼装单 beat 的描写片段,返回拼好的描写段(可能为空)+ 剥离计数
+/// 按类别有序拼装单 beat 的描写片段。
 ///
+/// 返回 `(描写段, 剥离计数, 注入的原文列表)`。
 /// 顺序模拟小说段落节奏:氛围开头 -> 感官穿插 -> 情绪 -> 神态
 fn assemble_beat_descriptions(
     refs: &[String],
     vocab: &Vocab,
     allowed: &HashSet<String>,
-) -> (String, usize) {
+) -> (String, usize, Vec<String>) {
     let mut by_cat: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     let mut stripped = 0;
@@ -179,7 +238,8 @@ fn assemble_beat_descriptions(
             }
         }
     }
-    (parts.join(""), stripped)
+    let quotes = parts.clone();
+    (parts.join(""), stripped, quotes)
 }
 
 struct Beat {
@@ -498,5 +558,56 @@ gesture:
         .unwrap();
         assert!(!prose.text.contains("因此"));
         assert!(prose.text.contains("她转身"));
+    }
+
+    #[test]
+    fn verify_provenance_zero_for_clean_assemble() {
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她落座。", &["emotion.sorrow"])]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &["emotion.sorrow"])],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.unverified_quotes, 0);
+        assert_eq!(prose.quality.unverified_quotes, 0);
+        assert!(prose.text.contains("心中未免悔恨"));
+    }
+
+    #[test]
+    fn quality_report_aggregates_kpis() {
+        // One clean quote beat + one stripped-ref action-only beat.
+        let prose = AssembledProse::assemble(
+            &narrative(vec![
+                (CHARACTER_A, "她俯身。", &["emotion.sorrow"]),
+                (CHARACTER_A, "她继续。", &["emotion.fabricated"]),
+            ]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &["emotion.sorrow"])],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.stripped_refs, 1);
+        assert_eq!(prose.action_only_beats, 1);
+        assert_eq!(prose.unverified_quotes, 0);
+        // 2 accepted beats, 1 action-only → rate 0.5
+        assert!((prose.quality.action_only_rate - 0.5).abs() < 1e-9);
+        // 2 refs seen, 1 stripped → rate 0.5
+        assert!((prose.quality.stripped_ref_rate - 0.5).abs() < 1e-9);
+        assert!((prose.quality.quote_density - prose.quote_density()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn low_quote_density_flag_when_sparse() {
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她转身离开。", &[])]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &[])],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.quote_chars, 0);
+        assert!(prose.quality.low_quote_density);
+        assert!(prose.quote_density() < MIN_QUOTE_DENSITY);
     }
 }

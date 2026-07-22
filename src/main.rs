@@ -128,12 +128,14 @@ async fn main() -> anyhow::Result<()> {
                 "
 === 正文 ===
 {}
-=== stripped refs: {} | rejected beats: {} | action-only beats: {} | quote density: {:.2} ===",
+=== stripped refs: {} | rejected beats: {} | action-only beats: {} | quote density: {:.2} | unverified quotes: {} | low_quote_density: {} ===",
                 prose.text,
                 prose.stripped_refs,
                 prose.rejected_beats,
                 prose.action_only_beats,
-                prose.quote_density()
+                prose.quote_density(),
+                prose.unverified_quotes,
+                prose.quality.low_quote_density
             );
         }
         Err(e) => eprintln!("narrate err: {e}"),

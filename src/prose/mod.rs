@@ -19,7 +19,7 @@ mod generator; // ProseGenerator trait + NarrateRequest + 候选类型
 mod mock; // 测试用 mock
 mod rig_impl; // rig(DeepSeek)生产实现
 
-pub use assembly::AssembledProse;
+pub use assembly::{AssembledProse, MIN_QUOTE_DENSITY, ProseQualityReport};
 pub use contract::{LlmNarrative, NarrativeBeat};
 pub use generator::{CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator};
 pub use mock::MockProseGenerator;

@@ -67,6 +67,92 @@ pub struct Vocab {
     pub file: VocabFile,
 }
 
+/// BM25 scores for a candidate pool (zero-dependency IR ranking).
+///
+/// Documents = each candidate's `text` + tags. Query terms use **whole-term
+/// substring TF** (`text.matches(term).count()` + exact tag hit), not char-level
+/// tokenization, so multi-char names like 「宝玉」 stay atomic.
+struct Bm25Scores {
+    /// candidate id → BM25 score (0 if missing / empty query)
+    scores: HashMap<String, f64>,
+}
+
+impl Bm25Scores {
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
+
+    fn build(candidates: &[VocabularyCandidate], query_terms: &[String]) -> Self {
+        let terms: Vec<&str> = query_terms
+            .iter()
+            .map(|q| q.trim())
+            .filter(|q| !q.is_empty())
+            .collect();
+        if terms.is_empty() || candidates.is_empty() {
+            return Self {
+                scores: HashMap::new(),
+            };
+        }
+
+        let n = candidates.len() as f64;
+        let lens: Vec<f64> = candidates.iter().map(bm25_doc_len).collect();
+        let avgdl = (lens.iter().sum::<f64>() / n).max(1e-9);
+
+        let mut dfs = vec![0usize; terms.len()];
+        for c in candidates {
+            for (i, term) in terms.iter().enumerate() {
+                if bm25_term_tf(c, term) > 0.0 {
+                    dfs[i] += 1;
+                }
+            }
+        }
+        let idfs: Vec<f64> = dfs
+            .iter()
+            .map(|&df| {
+                let df = df as f64;
+                ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+            })
+            .collect();
+
+        let mut scores = HashMap::with_capacity(candidates.len());
+        for (di, c) in candidates.iter().enumerate() {
+            let mut s = 0.0_f64;
+            let dl = lens[di];
+            for (i, term) in terms.iter().enumerate() {
+                let tf = bm25_term_tf(c, term);
+                if tf <= 0.0 {
+                    continue;
+                }
+                let denom = tf + Self::K1 * (1.0 - Self::B + Self::B * dl / avgdl);
+                s += idfs[i] * (tf * (Self::K1 + 1.0)) / denom;
+            }
+            scores.insert(c.id.clone(), s);
+        }
+        Self { scores }
+    }
+
+    fn get(&self, id: &str) -> f64 {
+        self.scores.get(id).copied().unwrap_or(0.0)
+    }
+}
+
+/// Document length proxy: chars in text + chars in tags.
+fn bm25_doc_len(c: &VocabularyCandidate) -> f64 {
+    let tag_chars: usize = c.tags.iter().map(|t| t.chars().count()).sum();
+    (c.text.chars().count() + tag_chars) as f64
+}
+
+/// Whole-term TF: non-overlapping substring hits in text + 1 if any tag == term.
+fn bm25_term_tf(c: &VocabularyCandidate, term: &str) -> f64 {
+    if term.is_empty() {
+        return 0.0;
+    }
+    let mut tf = c.text.matches(term).count() as f64;
+    if c.tags.iter().any(|t| t == term) {
+        tf += 1.0;
+    }
+    tf
+}
+
 impl Vocab {
     /// 从 YAML 字符串加载词库
     pub fn load_from_str(s: &str) -> Result<Self, super::super::models::StoryError> {
@@ -228,11 +314,12 @@ impl Vocab {
         self.candidates_ranked_limited(selected, &[], per_sense, total_max)
     }
 
-    /// Lexical score for scene/character-aware ranking (critique P0/P1).
+    /// Selected-tag hits + exact name/tag voice isolation (critique P0/P1).
     /// Higher is better. Pure function; deterministic.
     ///
-    /// Voice isolation: exact tag == query term (e.g. character name) gets a large boost
-    /// so other characters' fragments rank lower when name is in query_terms.
+    /// Text/substring relevance is scored by BM25 in [`Self::candidates_ranked_limited`];
+    /// this function only adds discrete boosts that BM25 should not replace
+    /// (selected-tag preference + exact character-name tag isolation).
     pub fn score_candidate(
         c: &VocabularyCandidate,
         selected: &[String],
@@ -253,21 +340,28 @@ impl Vocab {
             // Exact character-name / term on tag → strong voice boost (P1).
             if c.tags.iter().any(|t| t == q) {
                 score += 40 * weight;
-            } else if c
-                .tags
-                .iter()
-                .any(|t| t.contains(q) || q.contains(t.as_str()))
-            {
-                score += 12 * weight;
-            }
-            if c.text.contains(q) {
-                score += 8 * weight;
             }
         }
         score
     }
 
-    /// Rank by [`Self::score_candidate`] (DESC) then id (ASC), then apply caps.
+    /// BM25 base (×1000, rounded) + [`Self::score_candidate`] boosts.
+    /// Used by ranked selection; exposed for tests.
+    pub fn score_candidate_with_bm25(
+        c: &VocabularyCandidate,
+        selected: &[String],
+        query_terms: &[String],
+        bm25: f64,
+    ) -> i64 {
+        let base = (bm25 * 1000.0).round() as i64;
+        base + Self::score_candidate(c, selected, query_terms)
+    }
+
+    /// Rank by BM25 + voice/selected boosts (DESC), then SENSES order + id (ASC); apply caps.
+    ///
+    /// Builds a zero-dependency BM25 index over the candidate pool (text + tags as docs,
+    /// whole-term substring TF). Empty `query_terms` → BM25=0, order falls back to
+    /// selected-tag boosts then stable sense/id order.
     pub fn candidates_ranked_limited(
         &self,
         selected: &[String],
@@ -276,9 +370,10 @@ impl Vocab {
         total_max: usize,
     ) -> Vec<VocabularyCandidate> {
         let mut all = self.candidates_for_tags(selected);
+        let bm25 = Bm25Scores::build(&all, query_terms);
         all.sort_by(|a, b| {
-            let sa = Self::score_candidate(a, selected, query_terms);
-            let sb = Self::score_candidate(b, selected, query_terms);
+            let sa = Self::score_candidate_with_bm25(a, selected, query_terms, bm25.get(&a.id));
+            let sb = Self::score_candidate_with_bm25(b, selected, query_terms, bm25.get(&b.id));
             // Score DESC; ties break by SENSES order then id (stable with prior dict-cap tests).
             sb.cmp(&sa).then_with(|| {
                 let ia = SENSES

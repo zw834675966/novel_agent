@@ -2,49 +2,48 @@
 
 ## Status
 
-PASS. Task 5 completed without commit. Runtime behavior, dependencies, and schema unchanged.
+Implemented and committed Task 5 LLM-layer changes. Focused semantic request test remains blocked by Task 6-owned `StoryService` orchestration, which does not invoke `select_context_tags` yet. No service code changed.
 
-## Commands
+## Implementation
 
-- `cargo fmt --all`: passed; no output.
-- `cargo fmt --all -- --check`: passed; no output.
-- `cargo check --all-targets`: passed; `Finished dev profile` in 2.23s.
-- `cargo test --all-targets`: passed; 23 tests across 7 suites, 0 failures.
-- `cargo clippy --all-targets --all-features -- -D warnings`: passed; `No issues found`.
-- `git diff --check`: passed; no whitespace errors.
+- `RigSenseGenerator` now owns independent DeepSeek extractors for `LlmContextTagSelection` and `LlmCharacterDerivation`, both built with `retries(1)`.
+- Tag selection prompt includes character details, objective event, previous plot kind/reason, and sorted available tags. It explicitly restricts output to listed tags.
+- Derivation prompt includes prior plots, memories, previous sensation, and ID-sorted semantic vocabulary candidates rendered with ID, sense, text, and sorted tags.
+- Both production LLM calls convert extraction errors to `StoryError::Llm`.
+- `MockSenseGenerator` accepts deterministic tag and derivation responses.
+- Mock fallback and e2e/scene fixtures construct `LlmContextTagSelection::default()` where tags are not needed.
+- `tests/scene_test.rs` contains recording generator coverage for semantic candidate metadata and available tags.
 
-## Changed Files
+## TDD Evidence
 
-Task-owned source changes:
+1. RED: changed scene mock fixtures to require a tag response before changing production mock code.
+2. Ran `cargo test --test scene_test derivation_passes_semantic_vocabulary_candidates`.
+3. Observed expected compile failure: `MockSenseGenerator::new` accepted one argument, while fixtures supplied controlled `LlmContextTagSelection` plus derivation.
+4. GREEN: implemented deterministic mock tag response and production two-extractor behavior.
 
-- `src/db/derivation_repo.rs`: indented lazy documentation continuation.
-- `src/models/ids.rs`: indented lazy documentation continuation.
+## Commands And Results
 
-Report:
+- `cargo test --test scene_test derivation_passes_semantic_vocabulary_candidates` before implementation: failed with two `E0061` errors, proving missing controlled tag-response constructor.
+- `cargo test --test scene_test derivation_passes_semantic_vocabulary_candidates` after implementation: compiled and ran, then failed at `select_context_tags was not invoked`. This is expected until Task 6 changes `StoryService`; Task 5 was explicitly prohibited from changing that orchestration.
+- `rustfmt --edition 2024 src/llm/rig_impl.rs src/llm/mock.rs src/main.rs tests/scene_test.rs tests/e2e.rs`: passed.
+- `cargo test --test e2e`: passed, 1 test passed.
+- `cargo check --bin novels`: passed.
+- `git diff --check`: passed before commit with no whitespace errors.
+- Staged diff review: passed; no secrets or unrelated staged paths. The staged `main.rs` diff excluded pre-existing distilled-vocabulary changes.
 
-- `.superpowers/sdd/task-5-report.md`
+## Commit
 
-## Worktree Summary
+- SHA: `0f5c4bb`
+- Message: `feat: select tags before character derivation`
+- Committed files:
+  - `src/llm/rig_impl.rs`
+  - `src/llm/mock.rs`
+  - `src/main.rs` (Task 5 mock fallback hunk only)
+  - `tests/e2e.rs`
+  - `tests/scene_test.rs`
 
-Existing user changes remain untouched, including `AGENTS.md`, most files under `src/`, `tests/`, `.superpowers/`, and `docs/superpowers/`. `git diff --stat` reports 35 tracked files changed, with 1,078 insertions and 137 deletions; this includes unrelated pre-existing worktree changes.
+## Self-Review And Concerns
 
-## Concerns
-
-- Worktree was already dirty before Task 5 and contains broad unrelated changes. They were preserved.
-- No dependencies, schema changes, or runtime behavior changes were introduced by Task 5.
-
-## Final Review Fixes
-
-- `tests/scene_test.rs`: replaced the single-participant partial-result test with two participants and a request-aware generator. One participant returns `StoryError::Llm`; the other succeeds. Assertions verify one `Ok`, one `Err`, and identify results by character ID/error rather than result order.
-- `tests/db_test.rs`: retained malformed `source` coverage and added malformed `certainty` JSON coverage, both requiring `StoryError::Database`.
-- Production behavior was unchanged.
-
-## Fresh Command Results
-
-- `cargo test --test scene_test derive_scene_returns_partial_on_one_failure`: passed; 1 test passed.
-- `cargo test --test db_test malformed_memory`: passed; 2 tests passed.
-- `cargo fmt --all`: passed; no output.
-- `cargo test --all-targets`: passed; 24 tests across 7 suites, 0 failures.
-- `cargo fmt --all -- --check`: passed; no output.
-- `cargo check --all-targets`: passed; `Finished dev profile [unoptimized + debuginfo]` in 1.43s.
-- `cargo clippy --all-targets --all-features -- -D warnings`: passed; `No issues found`.
+- `StoryService` selection invocation remains Task 6 work. Its absence prevents the semantic recording test from passing; this task intentionally leaves service orchestration untouched.
+- Existing dirty-worktree changes, including vocabulary distillation support in `main.rs`, were preserved and excluded from this commit.
+- No live DeepSeek request was run; extractor construction and error mapping compile through `cargo check --bin novels`.

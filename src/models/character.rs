@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 /// 角色定义
 /// =============
 /// 对应数据库 characters + character_personality_tags + character_skills 三张表。
-///
 /// 字段说明：
 ///   id          → UUID（CharacterId newtype）
 ///   name        → 角色显示名

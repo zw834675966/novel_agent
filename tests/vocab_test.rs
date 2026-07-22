@@ -121,6 +121,64 @@ emotion:
 }
 
 #[test]
+fn bm25_ranks_repeated_term_higher() {
+    // TF weight: same term twice in text should beat once (no voice-tag confound).
+    let yaml = r#"
+visual:
+  once: { text: "雨夜独坐", tags: ["t"] }
+  twice: { text: "雨夜又见雨夜", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &["雨夜".into()], 2, 2);
+    assert_eq!(ranked[0].id, "visual.twice");
+}
+
+#[test]
+fn bm25_rare_term_beats_common_term() {
+    // IDF: rare term 「紫菱洲」 beats frequent 「宝玉」 when both are in the query.
+    let yaml = r#"
+visual:
+  rare_hit: { text: "紫菱洲边", tags: ["t"] }
+  common_hit: { text: "宝玉", tags: ["t"] }
+  filler_a: { text: "宝玉走了", tags: ["t"] }
+  filler_b: { text: "宝玉来了", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked =
+        v.candidates_ranked_limited(&["t".into()], &["紫菱洲".into(), "宝玉".into()], 4, 4);
+    assert_eq!(ranked[0].id, "visual.rare_hit");
+}
+
+#[test]
+fn bm25_empty_query_falls_back_to_stable_order() {
+    let yaml = r#"
+visual:
+  z: { text: "z", tags: ["t"] }
+  a: { text: "a", tags: ["t"] }
+emotion:
+  m: { text: "m", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &[], 2, 3);
+    let ids: Vec<_> = ranked.iter().map(|c| c.id.as_str()).collect();
+    // Empty query → BM25=0, equal selected boost → SENSES then id: visual.a, visual.z, emotion.m
+    assert_eq!(ids, vec!["visual.a", "visual.z", "emotion.m"]);
+}
+
+#[test]
+fn bm25_preserves_voice_isolation() {
+    // Exact name tag must still beat a BM25-only text hit for a different character.
+    let yaml = r#"
+gesture:
+  other: { text: "宝玉宝玉宝玉", tags: ["t", "贾琏"] }
+  self: { text: "点头", tags: ["t", "宝玉"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &["宝玉".into()], 2, 2);
+    assert_eq!(ranked[0].id, "gesture.self");
+}
+
+#[test]
 fn candidates_for_tags_fall_back_when_tags_have_no_entry_match() {
     let v = Vocab::load_from_str(sample_yaml()).unwrap();
     let candidates = v.candidates_for_tags(&["known-but-unmatched".to_string()]);
