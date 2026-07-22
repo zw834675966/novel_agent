@@ -30,6 +30,15 @@ pub enum StoryError {
 
     #[error("database error: {0}")]
     Database(String),
+
+    #[error("relationship candidate not found: {0:?}")]
+    RelationshipCandidateNotFound(crate::models::RelationshipCandidateId),
+
+    #[error("relationship candidate already resolved: {0:?}")]
+    RelationshipCandidateResolved(crate::models::RelationshipCandidateId),
+
+    #[error("invalid relationship candidate: {0}")]
+    InvalidRelationshipCandidate(String),
 }
 
 /// sqlx 错误 → StoryError 自动转换

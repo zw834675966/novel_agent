@@ -20,6 +20,14 @@ pub struct SceneId(pub Uuid);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MemoryId(pub Uuid);
 
+/// 关系事实 ID（UUID newtype）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RelationshipFactId(pub Uuid);
+
+/// 关系候选 ID（UUID newtype）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RelationshipCandidateId(pub Uuid);
+
 /// 词汇 ID（字符串 newtype）
 /// =============================
 /// 格式："{sense}.{key}"，如 "visual.bloodstain"

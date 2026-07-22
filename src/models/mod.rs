@@ -13,15 +13,22 @@ pub mod ids; // 类型安全 ID（CharacterId/SceneId/MemoryId/VocabularyId）
 pub mod memory; // 角色记忆（CharacterMemory 持久化 + CharacterMemoryDraft LLM 输出）
 pub mod memory_source; // 记忆来源枚举（亲眼所见/听说/推断）& 确定性级别
 pub mod plot; // 剧情发展枚举 + 结构体
+pub mod relationship; // 关系类型、事实、候选、图快照
 pub mod scene; // 场景（Scene 持久化 + CreateScene 创建请求）
 pub mod sensation; // 五感选择（视觉/听觉/嗅觉/触觉/味觉）
 
 pub use character::Character;
 pub use derivation::CharacterDerivation;
 pub use error::StoryError;
-pub use ids::{CharacterId, MemoryId, SceneId, VocabularyId};
+pub use ids::{
+    CharacterId, MemoryId, RelationshipCandidateId, RelationshipFactId, SceneId, VocabularyId,
+};
 pub use memory::{CharacterMemory, CharacterMemoryDraft};
 pub use memory_source::{Certainty, MemorySource};
 pub use plot::{PlotDevelopment, PlotDevelopmentKind, StoredPlotDevelopment};
+pub use relationship::{
+    CandidateStatus, GraphEdge, GraphNode, GraphSnapshot, RelationshipCandidate, RelationshipFact,
+    RelationshipRevision, RelationshipType, RevisionStatus, validate_score,
+};
 pub use scene::{CreateScene, Scene};
 pub use sensation::SensorySelection;
