@@ -140,9 +140,7 @@ impl StoryService {
                 character: character.clone(),
                 scene: scene.clone(),
                 prior_plot_developments: prior_plot_developments.clone(),
-                available_tags: self
-                    .vocab
-                    .known_tags_limited(crate::vocab::DEFAULT_TAG_CAP),
+                available_tags: self.vocab.known_tags_limited(crate::vocab::DEFAULT_TAG_CAP),
             })
             .await?;
         let selected_tags = self.vocab.filter_known_tags(&raw_tags.tags);

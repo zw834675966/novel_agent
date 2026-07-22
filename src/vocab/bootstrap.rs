@@ -28,10 +28,10 @@ pub fn load_runtime_vocab(
     let mut vocab = Vocab::load_from_path(base)?;
     let base_entries = count_entries(&vocab);
     let mut distilled_files = 0;
-    if let Some(dir) = distilled_dir {
-        if dir.is_dir() {
-            distilled_files = vocab.load_dir_merged(dir)?;
-        }
+    if let Some(dir) = distilled_dir
+        && dir.is_dir()
+    {
+        distilled_files = vocab.load_dir_merged(dir)?;
     }
     let total_entries = count_entries(&vocab);
     Ok((
