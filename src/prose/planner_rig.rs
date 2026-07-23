@@ -64,9 +64,14 @@ fn build_planner_prompt(req: &PlanRequest) -> String {
     s.push_str(&format!("客观事件: {}\n", req.scene.objective_event));
     s.push_str("参与角色:\n");
     for c in &characters {
+        let personality = if c.personality.is_empty() {
+            "无".to_string()
+        } else {
+            c.personality.join("、")
+        };
         s.push_str(&format!(
-            "- {} | 名字: {} | 性格: {:?}\n",
-            c.id.0, c.name, c.personality
+            "- {} | 名字: {} | 性格: {}\n",
+            c.id.0, c.name, personality
         ));
     }
     s.push_str("\n请调用 submit 提交结构化结果。");

@@ -144,6 +144,7 @@ async fn real_provenance_scan_zero_on_clean_assemble() {
     let sense = Arc::new(MockSenseGenerator::new(
         LlmContextTagSelection::default(),
         LlmCharacterDerivation {
+            sensory_analysis: String::new(),
             sensations: SensorySelection::default(),
             new_memory: CharacterMemoryDraft {
                 content: "m".into(),
@@ -239,6 +240,7 @@ async fn real_quality_report_flags_sparse_prose() {
     let sense = Arc::new(MockSenseGenerator::new(
         LlmContextTagSelection::default(),
         LlmCharacterDerivation {
+            sensory_analysis: String::new(),
             sensations: SensorySelection::default(),
             new_memory: CharacterMemoryDraft {
                 content: "m".into(),

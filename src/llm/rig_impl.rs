@@ -59,27 +59,38 @@ impl RigSenseGenerator {
     fn build_derivation_prompt(req: &DerivationRequest) -> String {
         let mut s = String::new();
         s.push_str("你是小说人物视角推导器。只从候选词汇 ID 中选择，不得造词。\n\n");
+        s.push_str("【角色特质】\n");
         s.push_str(&format!(
-            "人物: {} | 性格: {:?} | 技能: {:?}\n",
-            req.character.name, req.character.personality, req.character.skills
+            "人物: {} | 性格: {} | 技能: {}\n",
+            req.character.name,
+            req.character.personality.join(", "),
+            req.character.skills.join(", ")
         ));
-        s.push_str(&format!("客观事件: {}\n", req.scene.objective_event));
+        s.push_str(&format!(
+            "【场景情况】\n客观事件: {}\n",
+            req.scene.objective_event
+        ));
         Self::append_prior_plots(&mut s, &req.prior_plot_developments);
         if !req.recent_memories.is_empty() {
-            s.push_str("该人物已知记忆:\n");
+            s.push_str("【记忆线索】\n");
             for m in req.recent_memories.iter().rev() {
                 s.push_str(&format!(
-                    "- [{:?}/{:?}] {}\n",
-                    m.source, m.certainty, m.content
+                    "- [来源: {}/确定度: {}] {}\n",
+                    memory_source_label(m.source),
+                    certainty_label(m.certainty),
+                    m.content.display_narrative()
                 ));
             }
         }
         if let Some(last) = &req.last_sensation {
-            s.push_str(&format!("上一场景感官: {:?}\n", last));
+            s.push_str(&format!(
+                "上一场景感官: {}\n",
+                render_sensory_selection(last)
+            ));
         }
         let mut candidates: Vec<_> = req.candidates.iter().collect();
         candidates.sort_by(|left, right| left.id.cmp(&right.id));
-        s.push_str("\n候选词汇:\n");
+        s.push_str("\n【候选感官库】\n");
         for candidate in candidates {
             let mut tags = candidate.tags.clone();
             tags.sort();
@@ -92,6 +103,7 @@ impl RigSenseGenerator {
             ));
         }
         s.push_str("\n请调用 submit 提交结构化结果。sensations 各字段只能包含候选 ID。");
+        s.push_str("\n\n重要：请先在 sensory_analysis 字段中填写对此场景的感官焦点分析（中文，50字以内），再选择 sensations ID。");
         s
     }
 
@@ -103,14 +115,16 @@ impl RigSenseGenerator {
         let mut s = String::new();
         s.push_str("你为小说人物选择本场景相关上下文标签。只能提交给定标签，不能造标签。\n\n");
         s.push_str(&format!(
-            "人物: {} | 性格: {:?} | 技能: {:?}\n",
-            req.character.name, req.character.personality, req.character.skills
+            "人物: {} | 性格: {} | 技能: {}\n",
+            req.character.name,
+            req.character.personality.join(", "),
+            req.character.skills.join(", ")
         ));
         s.push_str(&format!("客观事件: {}\n", req.scene.objective_event));
         Self::append_prior_plots(&mut s, &req.prior_plot_developments);
         s.push_str(&format!(
-            "可用标签（只能从此列表选择）: {:?}\n",
-            available_tags
+            "可用标签（只能从此列表选择）: {}\n",
+            available_tags.join(", ")
         ));
         s.push_str("请调用 submit 提交结构化结果，tags 只能包含可用标签中的值。");
         s
@@ -124,10 +138,133 @@ impl RigSenseGenerator {
         s.push_str("此前剧情发展:\n");
         for plot in plots.iter().rev() {
             s.push_str(&format!(
-                "- kind: {:?} | reason: {}\n",
-                plot.development.kind, plot.development.reason
+                "- 类型: {} | 原因: {}\n",
+                plot_kind_label(plot.development.kind),
+                plot.development.reason
             ));
         }
+    }
+}
+
+/// MemorySource -> Chinese label for prompt rendering (no Debug `{:?}`).
+fn memory_source_label(source: crate::models::MemorySource) -> &'static str {
+    use crate::models::MemorySource;
+    match source {
+        MemorySource::Witnessed => "亲眼目睹",
+        MemorySource::Heard => "听人所说",
+        MemorySource::Inferred => "推理得出",
+    }
+}
+
+/// Certainty -> Chinese label for prompt rendering.
+fn certainty_label(c: crate::models::Certainty) -> &'static str {
+    use crate::models::Certainty;
+    match c {
+        Certainty::Certain => "确定",
+        Certainty::Suspected => "推测",
+        Certainty::Uncertain => "不确定",
+    }
+}
+
+/// PlotDevelopmentKind -> Chinese label for prompt rendering.
+fn plot_kind_label(k: crate::models::PlotDevelopmentKind) -> &'static str {
+    use crate::models::PlotDevelopmentKind;
+    match k {
+        PlotDevelopmentKind::SuspicionRaised => "产生怀疑",
+        PlotDevelopmentKind::ConflictEscalated => "冲突升级",
+        PlotDevelopmentKind::GoalChanged => "目标改变",
+        PlotDevelopmentKind::RelationshipShifted => "关系变化",
+        PlotDevelopmentKind::NewClue => "获得新线索",
+    }
+}
+
+/// Render a SensorySelection as a compact human-readable string (no Debug `{:?}`).
+fn render_sensory_selection(s: &crate::models::SensorySelection) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !s.visual_ids.is_empty() {
+        parts.push(format!(
+            "视觉: {}",
+            s.visual_ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !s.auditory_ids.is_empty() {
+        parts.push(format!(
+            "听觉: {}",
+            s.auditory_ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !s.olfactory_ids.is_empty() {
+        parts.push(format!(
+            "嗅觉: {}",
+            s.olfactory_ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !s.tactile_ids.is_empty() {
+        parts.push(format!(
+            "触觉: {}",
+            s.tactile_ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !s.gustatory_ids.is_empty() {
+        parts.push(format!(
+            "味觉: {}",
+            s.gustatory_ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !s.emotion_ids.is_empty() {
+        parts.push(format!(
+            "情绪: {}",
+            s.emotion_ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !s.gesture_ids.is_empty() {
+        parts.push(format!(
+            "动作: {}",
+            s.gesture_ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !s.atmosphere_ids.is_empty() {
+        parts.push(format!(
+            "氛围: {}",
+            s.atmosphere_ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if parts.is_empty() {
+        "无".to_string()
+    } else {
+        parts.join("; ")
     }
 }
 
@@ -227,5 +364,86 @@ mod tests {
         for prompt in [derivation_prompt, tag_prompt] {
             assert!(prompt.find("older plot").unwrap() < prompt.find("newer plot").unwrap());
         }
+    }
+
+    #[test]
+    fn derivation_prompt_has_no_debug_syntax() {
+        use crate::models::{
+            Certainty, CharacterMemory, MemoryContentSlot, MemoryId, MemorySource,
+            SensorySelection, VocabularyId,
+        };
+
+        let character_id = CharacterId(Uuid::new_v4());
+        let scene_id = SceneId(Uuid::new_v4());
+        let memory = CharacterMemory {
+            id: MemoryId(Uuid::new_v4()),
+            character_id,
+            scene_id,
+            content: MemoryContentSlot::Observation("见到血迹".into()),
+            source: MemorySource::Witnessed,
+            certainty: Certainty::Certain,
+            created_at: Utc::now(),
+        };
+        let last_sensation = SensorySelection {
+            visual_ids: vec![VocabularyId::new("visual.bloodstain").unwrap()],
+            ..Default::default()
+        };
+        let request = DerivationRequest {
+            character: Character {
+                id: character_id,
+                name: "侦探".into(),
+                personality: vec!["谨慎".into(), "细心".into()],
+                skills: vec!["推理".into()],
+            },
+            scene: Scene {
+                id: scene_id,
+                objective_event: "古宅发现尸体".into(),
+                participant_ids: vec![character_id],
+                occurred_at: Utc::now(),
+            },
+            recent_memories: vec![memory],
+            last_sensation: Some(last_sensation),
+            candidates: vec![],
+            prior_plot_developments: vec![],
+            scene_participants: vec![],
+        };
+
+        let prompt = RigSenseGenerator::build_derivation_prompt(&request);
+
+        // No Rust Debug syntax: enum variant names, bracketed arrays, etc.
+        assert!(
+            !prompt.contains("Witnessed"),
+            "prompt must not contain Debug enum name"
+        );
+        assert!(
+            !prompt.contains("Certain"),
+            "prompt must not contain Debug enum name"
+        );
+        assert!(
+            !prompt.contains("Observation("),
+            "prompt must not contain Debug enum name"
+        );
+        assert!(
+            !prompt.contains("NewClue"),
+            "prompt must not contain Debug enum name"
+        );
+
+        // Chinese labels present instead.
+        assert!(
+            prompt.contains("亲眼目睹"),
+            "prompt should render MemorySource in Chinese"
+        );
+        assert!(
+            prompt.contains("确定"),
+            "prompt should render Certainty in Chinese"
+        );
+        assert!(
+            prompt.contains("【亲历/目击】"),
+            "prompt should use display_narrative"
+        );
+        assert!(
+            prompt.contains("谨慎, 细心"),
+            "prompt should join personality with commas"
+        );
     }
 }

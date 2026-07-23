@@ -21,6 +21,12 @@ pub struct ProseQualityReport {
     pub unverified_quotes: usize,
     /// `quote_density < MIN_QUOTE_DENSITY`.
     pub low_quote_density: bool,
+    /// Fraction of the five primary senses covered by selected ids (covered/5).
+    pub sensory_diversity_score: f64,
+    /// Primary senses (visual/auditory/olfactory/tactile/gustatory) with zero selected ids.
+    pub missing_senses: Vec<String>,
+    /// True when no primary sense is covered at all (degraded sensory density).
+    pub degraded_sensory_density: bool,
 }
 
 /// 拼装结果:正文 + 剥离/拒绝/动作-唯一计数 + quote density 可观测
@@ -85,6 +91,7 @@ impl AssembledProse {
         vocab: &Vocab,
         derivations: &[CharacterDerivation],
         participant_ids: &HashSet<String>,
+        fallback_pool: &HashSet<String>,
     ) -> Result<Self, StoryError> {
         if narrative.beats.is_empty() {
             return Err(StoryError::Llm("prose generator returned no beats".into()));
@@ -143,6 +150,47 @@ impl AssembledProse {
             }
         }
 
+        // Sensory diversity from derivations (five primary senses).
+        let (sensory_diversity_score, missing_senses, degraded_sensory_density) =
+            compute_sensory_diversity(derivations);
+
+        // Degraded fallback inject: when no five-sense coverage at all and the pool
+        // is non-empty, inject up to 2 base five-sense refs resolved from the
+        // candidate pool only (never free text; pool is candidate-filtered at derive
+        // time by the service).
+        if degraded_sensory_density && !fallback_pool.is_empty() {
+            let fb_refs = pick_fallback_sense_refs(fallback_pool, vocab, 2);
+            if !fb_refs.is_empty() {
+                let mut fb_quotes: Vec<String> = Vec::new();
+                for raw in &fb_refs {
+                    let Ok(vid) = crate::models::VocabularyId::new(raw) else {
+                        continue;
+                    };
+                    let Some(entry) = vocab.entries(vid.sense()).and_then(|m| m.get(vid.key()))
+                    else {
+                        continue;
+                    };
+                    fb_quotes.push(entry.text.clone());
+                }
+                if !fb_quotes.is_empty() {
+                    let fb_text = join_quotes_with_rhythm(&fb_quotes);
+                    quote_chars += fb_text.chars().count();
+                    injected_quotes.extend(fb_quotes.clone());
+                    if let Some(first) = paragraphs.first_mut() {
+                        // Prepend five-sense grounding before the first accepted beat.
+                        *first = if ends_with_cjk_punct(&fb_text) || starts_with_cjk_punct(first) {
+                            format!("{fb_text}{first}")
+                        } else {
+                            format!("{fb_text}。{first}")
+                        };
+                    } else {
+                        // No accepted beats: append as its own paragraph.
+                        paragraphs.push(fb_text);
+                    }
+                }
+            }
+        }
+
         let text = paragraphs.join("\n");
         let total_chars = text.chars().count();
         // Post-assemble provenance: every injected quote must appear in final body.
@@ -169,6 +217,9 @@ impl AssembledProse {
             },
             unverified_quotes,
             low_quote_density: quote_density < MIN_QUOTE_DENSITY,
+            sensory_diversity_score,
+            missing_senses,
+            degraded_sensory_density,
         };
         Ok(Self {
             text,
@@ -197,6 +248,87 @@ pub(crate) fn candidate_refs_for(derivation: &CharacterDerivation) -> HashSet<St
         .chain(s.atmosphere_ids.iter())
         .map(|id| id.as_str().to_string())
         .collect()
+}
+
+/// The five primary senses tracked for sensory-diversity governance.
+const PRIMARY_SENSES: [&str; 5] = ["visual", "auditory", "olfactory", "tactile", "gustatory"];
+
+/// Compute sensory diversity across derivations for the five primary senses.
+///
+/// Returns `(score, missing, degraded)`:
+/// - `score` = covered senses / 5
+/// - `missing` = primary senses with zero selected ids across all derivations
+/// - `degraded` = true when no primary sense is covered at all
+pub(crate) fn compute_sensory_diversity(
+    derivations: &[CharacterDerivation],
+) -> (f64, Vec<String>, bool) {
+    let mut covered = [false; 5];
+    for d in derivations {
+        let s = &d.sensations;
+        if !s.visual_ids.is_empty() {
+            covered[0] = true;
+        }
+        if !s.auditory_ids.is_empty() {
+            covered[1] = true;
+        }
+        if !s.olfactory_ids.is_empty() {
+            covered[2] = true;
+        }
+        if !s.tactile_ids.is_empty() {
+            covered[3] = true;
+        }
+        if !s.gustatory_ids.is_empty() {
+            covered[4] = true;
+        }
+    }
+    let count = covered.iter().filter(|&&c| c).count();
+    let score = count as f64 / PRIMARY_SENSES.len() as f64;
+    let missing = PRIMARY_SENSES
+        .iter()
+        .zip(covered.iter())
+        .filter(|(_, c)| !*c)
+        .map(|(sense, _)| sense.to_string())
+        .collect();
+    (score, missing, count == 0)
+}
+
+/// Pick up to `max` fallback five-sense refs from the candidate pool.
+///
+/// Stable order visual -> auditory -> olfactory -> tactile -> gustatory; for
+/// each sense take the lexicographically-first pool id that starts with
+/// `{sense}.` and resolves in `vocab`. Caps total at `max`. The pool is
+/// already candidate-filtered at derive time, so resolution is vocab-only.
+pub(crate) fn pick_fallback_sense_refs(
+    pool: &HashSet<String>,
+    vocab: &Vocab,
+    max: usize,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for sense in PRIMARY_SENSES {
+        if out.len() >= max {
+            break;
+        }
+        let prefix = format!("{sense}.");
+        let mut matches: Vec<&String> = pool.iter().filter(|id| id.starts_with(&prefix)).collect();
+        matches.sort();
+        for raw in matches {
+            if out.len() >= max {
+                break;
+            }
+            let Ok(vid) = crate::models::VocabularyId::new(raw) else {
+                continue;
+            };
+            if vocab
+                .entries(vid.sense())
+                .and_then(|m| m.get(vid.key()))
+                .is_some()
+            {
+                out.push(raw.clone());
+                break; // one ref per sense
+            }
+        }
+    }
+    out
 }
 
 /// Resolved quote candidate before source filter + rhythm join.
@@ -504,6 +636,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &ids)],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
 
@@ -539,6 +672,7 @@ gesture:
                 &["visual.bloodstain", "atmosphere.coldnight"],
             )],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
         let pos_blood = prose.text.find("血迹").unwrap();
@@ -570,6 +704,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &[])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
 
@@ -595,6 +730,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
 
@@ -618,6 +754,7 @@ gesture:
                 derivation(CHARACTER_B, &["emotion.sorrow"]),
             ],
             &participants(&[CHARACTER_A, CHARACTER_B]),
+            &HashSet::new(),
         )
         .unwrap();
 
@@ -638,6 +775,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.missing"])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
 
@@ -665,6 +803,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
 
@@ -684,6 +823,7 @@ gesture:
             &sample_vocab(),
             &[],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
 
@@ -703,6 +843,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &[])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
 
@@ -722,6 +863,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
 
@@ -737,6 +879,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &[])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap_err();
 
@@ -765,6 +908,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
         // "心中未免悔恨" + "她坐下"
@@ -788,6 +932,7 @@ gesture:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &[])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
         assert!(!prose.text.contains("因此"));
@@ -813,6 +958,7 @@ gesture:
                 &["visual.bloodstain", "olfactory.bloodsmell"],
             )],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
         // Must not bare-paste "血迹血腥味"
@@ -853,6 +999,7 @@ visual:
             &v,
             &[derivation(CHARACTER_A, &ids)],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
         // Tie hlm vs zhz (1 each) → first-seen wins (hlm); zhz stripped.
@@ -881,6 +1028,7 @@ visual:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
         assert_eq!(prose.unverified_quotes, 0);
@@ -909,6 +1057,7 @@ visual:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &["emotion.sorrow"])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
         assert_eq!(prose.stripped_refs, 1);
@@ -933,10 +1082,101 @@ visual:
             &sample_vocab(),
             &[derivation(CHARACTER_A, &[])],
             &participants(&[CHARACTER_A]),
+            &HashSet::new(),
         )
         .unwrap();
         assert_eq!(prose.quote_chars, 0);
         assert!(prose.quality.low_quote_density);
         assert!(prose.quote_density() < MIN_QUOTE_DENSITY);
+    }
+
+    #[test]
+    fn degraded_with_pool_injects_five_sense_refs() {
+        // Derivation has only gesture/emotion (no five-sense) -> degraded.
+        // Pool contains a resolvable visual id -> inject up to 2 base five-sense refs.
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::SitDown,
+            target: None,
+            dialogue: None,
+        };
+        let pool: HashSet<String> = [
+            "visual.bloodstain".to_string(),
+            "auditory.footstep".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, action, &["gesture.weep"])]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &["gesture.weep"])],
+            &participants(&[CHARACTER_A]),
+            &pool,
+        )
+        .unwrap();
+        assert!(
+            prose.quality.degraded_sensory_density,
+            "no five-sense in derivation -> degraded"
+        );
+        assert_eq!(prose.quality.sensory_diversity_score, 0.0);
+        assert_eq!(prose.quality.missing_senses.len(), 5);
+        // Fallback five-sense quotes injected from the candidate pool (never free text).
+        assert!(
+            prose.text.contains("血迹"),
+            "visual fallback injected: {}",
+            prose.text
+        );
+        assert!(
+            prose.text.contains("脚步声"),
+            "auditory fallback injected: {}",
+            prose.text
+        );
+        // Injected quotes must appear in the final body (provenance re-scan).
+        assert_eq!(prose.quality.unverified_quotes, 0);
+        assert!(prose.quote_chars > 0);
+    }
+
+    #[test]
+    fn degraded_empty_pool_stays_flag_no_inject() {
+        // Degraded but empty pool -> flag stays true, no five-sense injected.
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::SitDown,
+            target: None,
+            dialogue: None,
+        };
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, action, &["gesture.weep"])]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &["gesture.weep"])],
+            &participants(&[CHARACTER_A]),
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert!(prose.quality.degraded_sensory_density);
+        assert_eq!(prose.quality.sensory_diversity_score, 0.0);
+        assert!(!prose.text.contains("血迹"));
+        assert!(!prose.text.contains("脚步声"));
+    }
+
+    #[test]
+    fn non_degraded_does_not_inject_fallback() {
+        // Derivation has a five-sense id -> not degraded -> no inject even with pool.
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::SitDown,
+            target: None,
+            dialogue: None,
+        };
+        let pool: HashSet<String> = ["visual.bloodstain".to_string()].into_iter().collect();
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, action, &["visual.bloodstain"])]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &["visual.bloodstain"])],
+            &participants(&[CHARACTER_A]),
+            &pool,
+        )
+        .unwrap();
+        assert!(!prose.quality.degraded_sensory_density);
+        assert_eq!(prose.quality.sensory_diversity_score, 0.2);
+        // Only one occurrence of 血迹 (the beat ref), no duplicate fallback inject.
+        assert_eq!(prose.text.matches("血迹").count(), 1);
     }
 }

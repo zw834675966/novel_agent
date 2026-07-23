@@ -245,6 +245,9 @@ mod tests {
                 stripped_ref_rate: 0.3,
                 unverified_quotes: 4,
                 low_quote_density: true,
+                sensory_diversity_score: 0.0,
+                missing_senses: vec![],
+                degraded_sensory_density: false,
             },
         };
         let k = quality_from_prose(&prose);

@@ -26,6 +26,9 @@ pub struct LlmRelationshipCandidate {
 /// rig `Extractor` 的泛型参数 T，强制 LLM 按此结构返回数据。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LlmCharacterDerivation {
+    /// 感官焦点分析（CoT）：LLM 在选择 ID 前先分析此场景的感官焦点。
+    #[serde(default)]
+    pub sensory_analysis: String,
     pub sensations: SensorySelection,
     pub new_memory: CharacterMemoryDraft,
     pub plot_development: Vec<PlotDevelopment>,

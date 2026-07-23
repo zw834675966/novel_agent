@@ -242,6 +242,25 @@ def build_report(
     rng = random.Random(seed)
     verbatim = sample_verbatim(entries, verbatim_sample, corpus_root, rng)
 
+    # Sensory Bucket Sampling: warn when gesture/emotion dominate and weak senses
+    # (olfactory/gustatory/tactile/auditory) are under-represented.
+    GESTURE_EMOTION_CATS = frozenset({"gesture", "emotion"})
+    WEAK_SENSE_CATS = frozenset({"auditory", "olfactory", "tactile", "gustatory"})
+    GESTURE_EMOTION_CAP_PCT = 30.0  # per-category cap for gesture/emotion
+    WEAK_SENSE_FLOOR_PCT = 5.0      # per-category floor for weak senses
+
+    bucket_warnings: list[str] = []
+    bucket_overweight: list[dict] = []
+    for cat in sorted(cat_counts):
+        pct = cat_pct.get(cat, 0.0) if cat_pct else 0.0
+        if cat in GESTURE_EMOTION_CATS and pct > GESTURE_EMOTION_CAP_PCT:
+            msg = f"gesture/emotion '{cat}' at {pct}% exceeds {GESTURE_EMOTION_CAP_PCT}% cap"
+            bucket_warnings.append(msg)
+            bucket_overweight.append({"cat": cat, "pct": pct, "limit": GESTURE_EMOTION_CAP_PCT})
+        if cat in WEAK_SENSE_CATS and total > 0 and pct < WEAK_SENSE_FLOOR_PCT:
+            msg = f"weak sense '{cat}' at {pct}% below {WEAK_SENSE_FLOOR_PCT}% floor"
+            bucket_warnings.append(msg)
+
     report = {
         "dir": str(root),
         "files": len(files),
@@ -255,6 +274,8 @@ def build_report(
         "unique_content_tags": len(content_tag_counter),
         "no_content_tags_rate": no_content_tags_rate,
         "top_content_tags": content_tag_counter.most_common(20),
+        "bucket_warnings": bucket_warnings,
+        "bucket_overweight": bucket_overweight,
         "verbatim_sample": verbatim,
         "verbatim_sample_pass_rate": verbatim["pass_rate"],
         "seed": seed,

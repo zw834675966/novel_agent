@@ -189,8 +189,8 @@ impl StructuredAction {
 ///
 /// 替代 PlotDevelopment.reason 自由字符串。
 /// 禁开放抒情，只限短事实槽（P1: 防 AI 因果说明文）。
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum PlotReasonSlot {
     /// 观察到某物
     Observed(String),
@@ -289,6 +289,172 @@ impl PlotReasonSlot {
     }
 }
 
+impl std::fmt::Display for PlotReasonSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.render())
+    }
+}
+
+impl Default for PlotReasonSlot {
+    fn default() -> Self {
+        PlotReasonSlot::Other(String::new())
+    }
+}
+
+impl From<&str> for PlotReasonSlot {
+    fn from(s: &str) -> Self {
+        PlotReasonSlot::Other(s.to_string())
+    }
+}
+
+impl From<String> for PlotReasonSlot {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+/// 记忆内容短槽（N4-extend: 记忆层结构化）
+///
+/// 替代 `CharacterMemory.content` 自由字符串。
+/// 只编码**事实形态**；来源轴由同条记忆的 `MemorySource` / `Certainty` 负责，
+/// 禁止再出现 Witnessed/Heard/Inferred 等同名变体（避免与 source 双轴打架）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryContentSlot {
+    /// 客观观察/事实锚点
+    Observation(String),
+    /// 对话原文引用
+    Dialogue(String),
+    /// 物证/现场细节
+    PhysicalDetail(String),
+    /// 时空锚点（时间/地点）
+    TimePlaceAnchor(String),
+    /// 其他短记忆（兜底；fixture/legacy 默认落此）
+    Other(String),
+}
+
+impl MemoryContentSlot {
+    /// 渲染为正文/提示词可复用字符串（去套话版）。
+    /// 不写「目击/传闻/推断」——那些由 `MemorySource` 在上层表达。
+    pub fn render(&self) -> String {
+        match self {
+            MemoryContentSlot::Observation(x) => Self::clean(x, 40),
+            MemoryContentSlot::Dialogue(x) => {
+                let x = Self::clean(x, 40);
+                if x.is_empty() {
+                    String::new()
+                } else {
+                    format!("言及：{}", x)
+                }
+            }
+            MemoryContentSlot::PhysicalDetail(x) => {
+                let x = Self::clean(x, 30);
+                if x.is_empty() {
+                    String::new()
+                } else {
+                    format!("物证：{}", x)
+                }
+            }
+            MemoryContentSlot::TimePlaceAnchor(x) => {
+                let x = Self::clean(x, 20);
+                if x.is_empty() {
+                    String::new()
+                } else {
+                    format!("时空锚：{}", x)
+                }
+            }
+            MemoryContentSlot::Other(x) => Self::clean(x, 40),
+        }
+    }
+
+    /// 就地剥套话并限长，**保留枚举判别式**（禁止 render→From 坍缩为 Other）。
+    /// 渲染为提示词专用的中文叙事标签（保留枚举判别式语义）。
+    ///
+    /// 与 `render()` 不同：`render()` 输出纯净事实文本供正文拼装；
+    /// `display_narrative()` 加【类型】前缀，用于 LLM prompt 上下文。
+    pub fn display_narrative(&self) -> String {
+        match self {
+            MemoryContentSlot::Observation(x) => {
+                let x = Self::clean(x, 40);
+                if x.is_empty() {
+                    String::new()
+                } else {
+                    format!("【亲历/目击】{}", x)
+                }
+            }
+            MemoryContentSlot::Dialogue(x) => {
+                let x = Self::clean(x, 40);
+                if x.is_empty() {
+                    String::new()
+                } else {
+                    format!("【耳闻/对话】{}", x)
+                }
+            }
+            MemoryContentSlot::PhysicalDetail(x) => {
+                let x = Self::clean(x, 30);
+                if x.is_empty() {
+                    String::new()
+                } else {
+                    format!("【物证/细节】{}", x)
+                }
+            }
+            MemoryContentSlot::TimePlaceAnchor(x) => {
+                let x = Self::clean(x, 20);
+                if x.is_empty() {
+                    String::new()
+                } else {
+                    format!("【时空/锚点】{}", x)
+                }
+            }
+            MemoryContentSlot::Other(x) => {
+                let x = Self::clean(x, 40);
+                if x.is_empty() {
+                    String::new()
+                } else {
+                    format!("【其他/杂记】{}", x)
+                }
+            }
+        }
+    }
+
+    pub fn sanitize_in_place(&mut self) {
+        match self {
+            MemoryContentSlot::Observation(x) => *x = Self::clean(x, 40),
+            MemoryContentSlot::Dialogue(x) => *x = Self::clean(x, 40),
+            MemoryContentSlot::PhysicalDetail(x) => *x = Self::clean(x, 30),
+            MemoryContentSlot::TimePlaceAnchor(x) => *x = Self::clean(x, 20),
+            MemoryContentSlot::Other(x) => *x = Self::clean(x, 40),
+        }
+    }
+
+    /// 从 DB `content` 列读取：优先 JSON 枚举；legacy 明文降级为 `Other`。
+    pub fn from_stored(raw: &str) -> Self {
+        serde_json::from_str(raw).unwrap_or_else(|_| MemoryContentSlot::Other(raw.to_string()))
+    }
+
+    fn clean(text: &str, max_chars: usize) -> String {
+        crate::text_guard::sanitize_free_text(text, max_chars)
+    }
+}
+
+impl std::fmt::Display for MemoryContentSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.render())
+    }
+}
+
+impl From<&str> for MemoryContentSlot {
+    fn from(s: &str) -> Self {
+        MemoryContentSlot::Other(s.to_string())
+    }
+}
+
+impl From<String> for MemoryContentSlot {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
 /// 从字符串构造 StructuredAction（测试便利：字符串作为 Say 动作的 dialogue）
 impl From<&str> for StructuredAction {
     fn from(s: &str) -> Self {
@@ -378,6 +544,64 @@ mod tests {
         let reason = PlotReasonSlot::Other(long);
         let result = reason.render();
         assert!(result.chars().count() <= 20);
+    }
+
+    #[test]
+    fn memory_content_sanitize_preserves_variant() {
+        let mut slot = MemoryContentSlot::Dialogue("因此她道不禁".into());
+        slot.sanitize_in_place();
+        match &slot {
+            MemoryContentSlot::Dialogue(s) => {
+                assert!(!s.contains("因此"));
+                assert!(!s.contains("不禁"));
+            }
+            other => panic!("variant collapsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn memory_content_json_roundtrip_observation() {
+        let slot = MemoryContentSlot::Observation("廊下见灯".into());
+        let json = serde_json::to_string(&slot).unwrap();
+        let back: MemoryContentSlot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, slot);
+    }
+
+    #[test]
+    fn memory_content_from_stored_accepts_legacy_plain_text() {
+        let slot = MemoryContentSlot::from_stored("旧库明文记忆");
+        assert_eq!(slot, MemoryContentSlot::Other("旧库明文记忆".into()));
+    }
+
+    #[test]
+    fn memory_content_render_does_not_encode_source() {
+        // 来源轴在 MemorySource；content 不得再写目击/传闻/推断
+        let slot = MemoryContentSlot::Observation("血迹".into());
+        let r = slot.render();
+        assert_eq!(r, "血迹");
+        assert!(!r.contains("目击"));
+        assert!(!r.contains("传闻"));
+        assert!(!r.contains("推断"));
+    }
+
+    #[test]
+    fn display_narrative_adds_type_label() {
+        let obs = MemoryContentSlot::Observation("廊下见灯".into());
+        assert_eq!(obs.display_narrative(), "【亲历/目击】廊下见灯");
+
+        let dlg = MemoryContentSlot::Dialogue("他说了什么".into());
+        assert_eq!(dlg.display_narrative(), "【耳闻/对话】他说了什么");
+
+        let det = MemoryContentSlot::PhysicalDetail("带血的刀".into());
+        assert_eq!(det.display_narrative(), "【物证/细节】带血的刀");
+    }
+
+    #[test]
+    fn display_narrative_cleans_fillers() {
+        let slot = MemoryContentSlot::Observation("因此见到血迹".into());
+        let r = slot.display_narrative();
+        assert!(!r.contains("因此"));
+        assert!(r.contains("血迹"));
     }
 
     #[test]

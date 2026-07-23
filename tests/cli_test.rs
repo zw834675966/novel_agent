@@ -21,6 +21,7 @@ async fn make_service() -> StoryService {
     let yaml = std::include_str!("../assets/vocab.yaml");
     let vocab = Vocab::load_from_str(yaml).unwrap();
     let canned = LlmCharacterDerivation {
+        sensory_analysis: String::new(),
         sensations: SensorySelection {
             visual_ids: vec![VocabularyId::new("visual.bloodstain").unwrap()],
             ..Default::default()

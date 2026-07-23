@@ -48,14 +48,17 @@
   （排序：候选池 BM25 + 标签/声口加权，非纯字典序或布尔包含。）
 - Free-text guard (`text_guard`): causal-filler strip + length caps for **action** (80), **memory** (120), **plot reason** (60).
   （自由文本护栏：action/记忆/情节 reason 剥套话并限长。）
-- Assemble verify: `AssembledProse` post-checks each injected quote appears in final `text` (`unverified_quotes`); `ProseQualityReport` aggregates quote_density / action_only_rate / stripped_ref_rate / low_quote_density (`MIN_QUOTE_DENSITY=0.30`, flag only — no hard fail).
+- Assemble verify: `AssembledProse` post-checks each injected quote appears in final `text` (`unverified_quotes`); `ProseQualityReport` aggregates quote_density / action_only_rate / stripped_ref_rate / low_quote_density (`MIN_QUOTE_DENSITY=0.30`, flag only — no hard fail). `ProseQualityReport` also tracks `sensory_diversity_score` / `missing_senses` / `degraded_sensory_density` (flag when zero five-sense coverage). When degraded, `narrate_scene` builds the fallback inject pool from full ranked vocab candidates (five primary senses) — NOT from LLM-selected derivation IDs, or the inject path is dead code.
+- **Sensory quota retrieval**: `candidates_ranked_limited_with_quotas` enforces weak-sense floors (auditory/olfactory/tactile/gustatory >=5, `WEAK_SENSE_FLOOR=5`), gesture/emotion caps (`GESTURE_EMOTION_CAP=15`), scene focus weighting. Total <=96.
+- **Prompt rendering**: `MemoryContentSlot::display_narrative()` renders memories with Chinese narrative labels; `build_derivation_prompt` has no Rust Debug `{:?}` syntax.
+- **CoT**: `LlmCharacterDerivation.sensory_analysis` field guides LLM to analyze sensory focus before selecting IDs
   （装配后回源重扫 + 质量报告；低 density 仅标志不报错。）
 - Assemble rhythm + book-source isolation (platform reverse N1/N2): join injected quotes with `，`/`。` (no bare short-lemma paste); within a beat, conflicting `hlm`/`zhz` sources keep majority (base lemmas without source always kept). Desc↔action joined with `。` when needed.
   （拼装节奏 + 书源隔离：防清单感与跨书串味。）
 - Tag shortlist: `known_tags_ranked_limited` ranks by scene/character query before cap 80; candidate score boosts exact name tags (voice isolation).
   （tag 短名单按场景/角色相关排序；候选对角色名 tag 强加权以减轻声口串味。）
-- Quality report: `python tools/distill_quality_report.py`
-  （质量报告：`python tools/distill_quality_report.py`。）
+- Quality report: `python tools/distill_quality_report.py` (includes sensory bucket sampling warnings for gesture/emotion overweight and weak-sense underrepresentation)
+  （质量报告：`python tools/distill_quality_report.py`，含感官桶采样比例校验。）
 - Never commit secrets; treat `corpus/` and `assets/distilled/` as local copyrighted material (do not commit unless explicitly approved).
   （勿提交密钥；`corpus/` 与 `assets/distilled/` 视为本地版权素材，未经明确批准勿提交。）
 

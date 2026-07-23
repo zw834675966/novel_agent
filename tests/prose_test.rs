@@ -60,6 +60,7 @@ async fn service_fixture(prose: Arc<dyn ProseGenerator>) -> StoryService {
     let sense = Arc::new(MockSenseGenerator::new(
         LlmContextTagSelection::default(),
         LlmCharacterDerivation {
+            sensory_analysis: String::new(),
             sensations: SensorySelection::default(),
             new_memory: CharacterMemoryDraft {
                 content: "mock".into(),
@@ -267,6 +268,134 @@ async fn narration_returns_source_text_and_quality_counters() {
     assert!((prose.quality.quote_density - prose.quote_density()).abs() < 1e-9);
 }
 
+/// 生产兜底池必须取自 ranked 候选而非 selected IDs。
+///
+/// 回归点：当 derivation 只选了 gesture/emotion（五感零选中 → degraded）时，
+/// 旧实现把 `fallback_pool` 建在 `req.candidates`（已选 derivation ID）上，
+/// 池里根本没有五感 ID，`assemble` 的注入路径沦为死代码。
+/// 修复后池取自全量 ranked 候选（五感主类），注入必须命中已知五感原文。
+#[tokio::test]
+async fn degraded_fallback_pool_from_ranked_candidates_injects_five_sense() {
+    let vocab = Vocab::load_from_str(
+        r#"
+visual:
+  bloodstain:
+    text: "血迹"
+    tags: ["crime"]
+auditory:
+  footstep:
+    text: "脚步声"
+    tags: ["night"]
+gesture:
+  weep:
+    text: "她伸手把帕子绞了又绞"
+    tags: ["grief"]
+"#,
+    )
+    .unwrap();
+
+    let db = Db::open_in_memory().await.unwrap();
+    let sense = Arc::new(MockSenseGenerator::new(
+        LlmContextTagSelection::default(),
+        LlmCharacterDerivation {
+            sensory_analysis: String::new(),
+            sensations: SensorySelection::default(),
+            new_memory: CharacterMemoryDraft {
+                content: "mock".into(),
+                source: MemorySource::Witnessed,
+                certainty: Certainty::Certain,
+            },
+            plot_development: vec![],
+            relationship_candidates: vec![],
+        },
+    )) as Arc<dyn novels::llm::SenseGenerator>;
+
+    let character_id = CharacterId(Uuid::new_v4());
+    let cid_str = character_id.0.to_string();
+    // Narrative only carries a gesture ref (no five-sense) -> degraded path.
+    let response = LlmNarrative {
+        beats: vec![NarrativeBeat {
+            pov: cid_str,
+            action: StructuredAction {
+                kind: ActionKind::SitDown,
+                target: None,
+                dialogue: None,
+            },
+            sensation_refs: vec!["gesture.weep".into()],
+            camera_beat_id: String::new(),
+        }],
+    };
+    let prose_gen = Arc::new(RecordingProseGenerator::new(response)) as Arc<dyn ProseGenerator>;
+
+    let service = StoryService::new(
+        db,
+        vocab,
+        sense,
+        prose_gen,
+        Arc::new(MockScenePlanner::fallback()),
+    );
+    service
+        .db()
+        .characters()
+        .create(character_id, "甲", &[], &[])
+        .await
+        .unwrap();
+    let scene_id = service
+        .create_scene(CreateScene {
+            objective_event: "深夜古宅".into(),
+            participant_ids: vec![character_id],
+            occurred_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    // Derivation selects ONLY a gesture id -> zero five-sense -> degraded.
+    let mut sensations = SensorySelection::default();
+    sensations
+        .gesture_ids
+        .push(VocabularyId::new("gesture.weep").unwrap());
+    let derivation = CharacterDerivation {
+        character_id,
+        scene_id,
+        sensations,
+        new_memory: CharacterMemory {
+            id: MemoryId(uuid::Uuid::new_v4()),
+            character_id,
+            scene_id,
+            content: "weeping".into(),
+            source: MemorySource::Witnessed,
+            certainty: Certainty::Certain,
+            created_at: chrono::Utc::now(),
+        },
+        plot_development: vec![],
+        relationship_candidates: vec![],
+    };
+
+    let prose = service
+        .narrate_scene(scene_id, &[derivation])
+        .await
+        .unwrap();
+
+    assert!(
+        prose.quality.degraded_sensory_density,
+        "gesture-only derivation must be degraded: {:?}",
+        prose.quality
+    );
+    // The five-sense quote comes ONLY from the ranked-candidate fallback pool;
+    // the selected-ID pool would have held gesture.weep alone and injected nothing.
+    assert!(
+        prose.text.contains("血迹"),
+        "visual fallback injected from ranked pool: {}",
+        prose.text
+    );
+    assert!(
+        prose.text.contains("脚步声"),
+        "auditory fallback injected from ranked pool: {}",
+        prose.text
+    );
+    assert_eq!(prose.quality.unverified_quotes, 0);
+}
+
 /// 闭环烟雾:base vocab merge 蒸馏 emotion 片段后,拼装正文解析出原著句。
 #[tokio::test]
 async fn assemble_resolves_distilled_emotion_text() {
@@ -301,6 +430,7 @@ emotion:
     let sense = Arc::new(MockSenseGenerator::new(
         LlmContextTagSelection::default(),
         LlmCharacterDerivation {
+            sensory_analysis: String::new(),
             sensations: SensorySelection::default(),
             new_memory: CharacterMemoryDraft {
                 content: "mock".into(),

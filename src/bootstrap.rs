@@ -125,6 +125,7 @@ pub async fn bootstrap(opts: BootstrapOptions) -> anyhow::Result<AppRuntime> {
             Arc::new(MockSenseGenerator::new(
                 LlmContextTagSelection::default(),
                 LlmCharacterDerivation {
+                    sensory_analysis: String::new(),
                     sensations: SensorySelection::default(),
                     new_memory: CharacterMemoryDraft {
                         content: "mock".into(),

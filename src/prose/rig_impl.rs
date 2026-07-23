@@ -68,9 +68,45 @@ fn build_prompt(req: &NarrateRequest) -> String {
     s.push_str(&format!("客观事件: {}\n", req.scene.objective_event));
     s.push_str("参与者:\n");
     for c in &characters {
+        let personality = if c.personality.is_empty() {
+            "无".to_string()
+        } else {
+            c.personality.join("、")
+        };
         s.push_str(&format!(
-            "- {} | 名字: {} | 性格: {:?}\n",
-            c.id.0, c.name, c.personality
+            "- {} | 名字: {} | 性格: {}\n",
+            c.id.0, c.name, personality
+        ));
+    }
+    // 编导镜头表：强制 LLM 按镜头序 1:1 输出 beat（Task 6）。
+    s.push_str("\n【编导镜头表 - 必须严格按序各写 1 个 beat，数量必须相等】\n");
+    for cb in &req.plan.scene_card.camera_beats {
+        s.push_str(&format!(
+            "- {} | {} | intent: {} | must_show: {} | location: {}\n",
+            cb.beat_id,
+            cb.pov_name,
+            cb.intent,
+            cb.must_show.join("/"),
+            if cb.location_hint.is_empty() {
+                "未标注"
+            } else {
+                &cb.location_hint
+            }
+        ));
+    }
+    s.push_str("\n铁律补充:\n");
+    s.push_str("5. beats.len() 必须等于镜头表长度，顺序一致。\n");
+    s.push_str("6. 每个 beat.camera_beat_id 填对应 beat_id。\n");
+    s.push_str("7. pov 填该镜头角色的 UUID（参与者列表中的 id）。\n");
+    s.push_str("8. sensation_refs 只能选自该 pov 的候选片段；Hard 模式正文将粘贴原文。\n");
+    s.push_str("9. action 只写客观动作/对话，禁止感官修饰。\n");
+    // 大纲上下文：梗概 + 各幕情绪/赌注，供镜头编排参考。
+    s.push_str("\n【大纲】\n");
+    s.push_str(&format!("梗概: {}\n", req.plan.outline.premise_one_liner));
+    for act in &req.plan.outline.acts {
+        s.push_str(&format!(
+            "- {} | {} | 情绪: {} | 赌注: {}\n",
+            act.act_id, act.summary, act.emotional_beat, act.stakes
         ));
     }
     s.push_str("\n候选片段(按角色分组,格式 id | sense | text | tags):\n");
@@ -229,5 +265,21 @@ mod tests {
         let prompt = build_prompt(&minimal_request());
         assert!(prompt.contains("action 只写客观动作和对话"));
         assert!(prompt.contains("sensation_refs 只能从提供的候选"));
+    }
+
+    #[test]
+    fn prompt_includes_camera_beats_and_outline() {
+        let prompt = build_prompt(&minimal_request());
+        assert!(
+            prompt.contains("编导镜头表"),
+            "prompt should include camera beat table"
+        );
+        assert!(
+            prompt.contains("beat_id"),
+            "prompt should reference beat_id"
+        );
+        assert!(prompt.contains("大纲"), "prompt should include outline");
+        // minimal 计划含一个镜头 b1，角色「甲」
+        assert!(prompt.contains("b1"));
     }
 }
