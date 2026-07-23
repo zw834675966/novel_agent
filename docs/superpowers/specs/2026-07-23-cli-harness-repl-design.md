@@ -170,6 +170,25 @@ src/
 
 Adding CLI must not change bare-run derive/narrate semantics or guardrails. Renaming default entry to `serve` is out of scope for this MVP.
 
+#### Clap bare-run wiring (implementation requirement)
+
+When defining the root `clap::Command` / derive `Parser`:
+
+- Subcommands must be **optional** (not required).
+- Use `subcommand_required_else_help(false)` (or equivalent) so that **no args** does **not** print help-and-exit.
+- Dispatch shape:
+
+```text
+match cli.command {
+  None => run_legacy_main()           // existing demo + API
+  Some(Commands::Repl { .. }) => ...
+  Some(Commands::Character { .. }) => ...
+  // ...
+}
+```
+
+Bare `novels` / `cargo run` must fall through smoothly to the pre-CLI main path.
+
 ## Commands and session
 
 ### Session (REPL only)
@@ -202,10 +221,21 @@ One-shot processes start with an empty session; `derive` / `narrate` require `--
 | `scene create <event>` | `--with a,b` (≥1) | event non-empty; all participants resolve | `create_scene`; REPL **auto `use scene`** new scene |
 | `scene list` / `scene show` | — | show: unique resolve | List / detail |
 | `show derivation` | optional `--scene` `--character` | resolvable scene | Read DB; no LLM |
-| `show prose` | optional `--scene` | — | Process-local cache of last `narrate` in this process; if none, error with `next: narrate` |
+| `show prose` | optional `--scene` | — | Process-local cache of last `narrate` in this process only |
 | `help` / `quit` | — | — | REPL |
 
-**Prose persistence:** MVP does **not** add a prose table. `show prose` uses in-process cache only. One-shot `narrate` prints immediately.
+**Prose persistence:** MVP does **not** add a prose table. `show prose` uses **in-process cache only**.
+
+#### `show prose` vs one-shot (implementation requirement)
+
+| Mode | Expected behavior |
+|------|-------------------|
+| REPL after `narrate` | `show prose` re-prints cached body + quality KPIs |
+| REPL without prior `narrate` in this process | `status=error`; explain cache empty; `next: narrate` |
+| One-shot `novels show prose` | Cache is **always empty** (new process). Must **not** look like a generic bug. Emit explicit Chinese guidance, e.g. summary: 正文仅在 REPL 进程内缓存；单次命令请用 `novels narrate --scene <id>` 直接输出正文。`next: novels narrate --scene <id>` |
+| One-shot `novels narrate` | Print full prose + quality to stdout immediately; no reliance on `show prose` |
+
+Acceptance: one-shot `show prose` error text must mention **REPL 进程内缓存** and point users to **one-shot `narrate`** for printing prose.
 
 ### Commands that call LLM (full harness path)
 
@@ -269,6 +299,21 @@ StoryService::new(...)
 | `--json` | Machine-readable observation (same fields); does not change generation |
 | Forbidden flags | `--raw-llm`, `--skip-validate`, `--free-prose` |
 
+#### Mock degradation + explicit warning (implementation requirement)
+
+When `DEEPSEEK_API_KEY` is missing (or client construction fails):
+
+1. Use the same Mock pair as `main` (sense + prose together; no half-configured state).
+2. On **CLI entry** (`repl` or any one-shot that bootstraps generators), print observation with at least:
+
+```text
+status: warning
+summary: DEEPSEEK_API_KEY 未设置，使用 Mock（非生产质量）
+```
+
+3. Do not present Mock success as production-quality narration. Optional: repeat a short warning line on each `derive` / `narrate` success while in Mock mode (recommended if one-shot users skip reading startup noise).
+4. Tests must assert the warning path is visible (stdout/stderr contract documented in the implementation plan).
+
 ### I/O split
 
 - Vocab load lines → `stderr`
@@ -289,8 +334,9 @@ StoryService::new(...)
 
 ### Concurrency
 
-- REPL runs commands **serially**
-- Shared `novels.db` with a concurrent API process is allowed but undocumented multi-writer merge is out of scope; note race risk in docs only
+- REPL runs commands **serially** (next command waits for the previous to finish).
+- **SQLite multi-process writers are out of MVP scope.** CLI and a concurrent HTTP server may share `novels.db`; MVP does **not** add lock-retry loops, WAL tuning, or multi-writer merge logic.
+- Implementation must document the risk (CLI help or short note in module docs): avoid simultaneous heavy writes to the same scene from CLI and Web; last-writer-wins / SQLITE_BUSY failures are acceptable failure modes for MVP, surfaced as `status=error` with a readable message when sqlx returns busy/locked errors.
 
 ## Testing
 
@@ -335,14 +381,15 @@ Suggested home: `tests/cli_test.rs` and/or `src/cli` unit tests with `Db::open_i
 ## Acceptance (MVP done)
 
 1. `novels repl` completes: create characters → create scene → `derive` → `narrate`, Chinese output + quality KPIs.
-2. One-shot `character|scene|derive|narrate` paths work.
-3. No API key → warning + Mock; not presented as production quality.
-4. Vocab / distilled / env parity with `main`.
-5. No bypass flags; LLM only via `StoryService`.
-6. New CLI tests green; existing scene/e2e (and related) suites do not regress because of CLI wiring.
-7. Implementation follows a separate plan from `writing-plans` after this spec is reviewed.
+2. One-shot `character|scene|derive|narrate` paths work; one-shot `show prose` fails with explicit REPL-cache / use-`narrate` guidance.
+3. No API key → `status: warning` + Mock; not presented as production quality.
+4. Bare `novels` (no subcommand) still runs legacy demo + API (clap optional subcommands).
+5. Vocab / distilled / env parity with `main`.
+6. No bypass flags; LLM only via `StoryService`.
+7. New CLI tests green; existing scene/e2e (and related) suites do not regress because of CLI wiring.
+8. Implementation follows a separate plan from `writing-plans` after this spec is reviewed.
 
-## Implementation note
+## Implementation notes (approved refinements)
 
 Do not implement until:
 
@@ -350,6 +397,15 @@ Do not implement until:
 2. An implementation plan is written under `docs/superpowers/plans/`.
 
 Dependencies to add (expected): `clap` (derive features). Avoid reedline in MVP unless plan explicitly promotes it.
+
+Checklist for the implementer (detail already expanded above):
+
+| Topic | Must do |
+|-------|---------|
+| One-shot `show prose` | Explicit message: prose cache is REPL-process-only; use one-shot `narrate` to print body |
+| Clap bare run | Optional subcommands; `subcommand_required_else_help(false)`; `None` → legacy main |
+| Mock / no API key | `status: warning` + 非生产质量; never silent Mock |
+| SQLite vs API | No multi-writer merge in MVP; document race; surface busy/lock as error |
 
 ## Research notes (brief)
 
