@@ -18,8 +18,8 @@ pub mod relationship; // 关系类型、事实、候选、图快照
 pub mod scene; // 场景（Scene 持久化 + CreateScene 创建请求）
 pub mod sensation; // 五感选择（视觉/听觉/嗅觉/触觉/味觉）
 
-pub use action::{ActionKind, PlotReasonSlot, StructuredAction};
-pub use character::Character;
+pub use action::{ActionKind, MemoryContentSlot, PlotReasonSlot, StructuredAction};
+pub use character::{Character, CharacterState};
 pub use derivation::{CharacterDerivation, SceneDerivationDetail};
 pub use error::StoryError;
 pub use ids::{

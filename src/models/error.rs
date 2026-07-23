@@ -16,6 +16,9 @@ pub enum StoryError {
     #[error("character {0:?} is not a participant of scene {1:?}")]
     NotSceneParticipant(CharacterId, SceneId),
 
+    #[error("invalid participant: {0}")]
+    InvalidParticipant(String),
+
     #[error("vocabulary load error: {0}")]
     VocabularyLoad(String),
 
