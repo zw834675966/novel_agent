@@ -54,6 +54,7 @@ impl ProseGenerator for MockProseGenerator {
                     dialogue: None,
                 },
                 sensation_refs,
+                camera_beat_id: String::new(),
             }],
         })
     }

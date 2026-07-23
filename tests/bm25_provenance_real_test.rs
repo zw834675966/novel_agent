@@ -161,6 +161,7 @@ async fn real_provenance_scan_zero_on_clean_assemble() {
             pov: cid_str,
             action: "她转身。".into(),
             sensation_refs: vec![raw_id.clone()],
+            camera_beat_id: String::new(),
         }],
     };
     let svc = StoryService::new(db, v, sense, Arc::new(FixedProse(narrative)));
@@ -250,6 +251,7 @@ async fn real_quality_report_flags_sparse_prose() {
             pov: cid_str,
             action: "她独自转身离去。".into(),
             sensation_refs: vec![],
+            camera_beat_id: String::new(),
         }],
     };
     let svc = StoryService::new(db, v, sense, Arc::new(EmptyProse(narrative)));

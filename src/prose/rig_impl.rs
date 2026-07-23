@@ -151,6 +151,7 @@ mod tests {
                 character_id: CharacterId(uuid_from(cid)),
                 candidates: vec![],
             }],
+            plan: crate::prose::LlmScenePlan::minimal("事件", &["甲"]),
         }
     }
 
@@ -191,6 +192,7 @@ mod tests {
                     candidates: vec![],
                 },
             ],
+            plan: crate::prose::LlmScenePlan::minimal("深夜来访", &["甲", "乙"]),
         }
     }
 

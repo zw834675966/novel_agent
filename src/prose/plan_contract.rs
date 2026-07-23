@@ -42,6 +42,44 @@ pub struct LlmScenePlan {
     pub scene_card: SceneCard,
 }
 
+impl LlmScenePlan {
+    /// 构造最小计划：一个 act + 每个角色名一个镜头。
+    /// Task 4 中作为 service.rs 占位；Task 5 替换为真实 ScenePlanner 输出。
+    /// 测试中用于构造 NarrateRequest。
+    pub fn minimal(event: &str, character_names: &[&str]) -> Self {
+        let premise: String = event.chars().take(40).collect();
+        let camera_beats: Vec<CameraBeat> = character_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| CameraBeat {
+                beat_id: format!("b{}", i + 1),
+                pov_name: (*name).to_string(),
+                intent: format!("回应：{}", premise),
+                must_show: vec![],
+                location_hint: String::new(),
+            })
+            .collect();
+        let on_stage: Vec<String> = character_names.iter().map(|n| (*n).to_string()).collect();
+        LlmScenePlan {
+            outline: StoryOutline {
+                premise_one_liner: premise.clone(),
+                acts: vec![OutlineAct {
+                    act_id: "a1".into(),
+                    summary: premise,
+                    emotional_beat: "推进".into(),
+                    stakes: "未定".into(),
+                }],
+            },
+            scene_card: SceneCard {
+                when: "场景当下".into(),
+                where_place: "未标注".into(),
+                on_stage,
+                camera_beats,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

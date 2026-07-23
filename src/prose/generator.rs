@@ -1,6 +1,7 @@
 use crate::models::{Character, CharacterDerivation, CharacterId, Scene, StoryError};
 
 use super::contract::LlmNarrative;
+use super::plan_contract::LlmScenePlan;
 
 /// 候选描写片段(语义版,携带 sense/text/tags)
 /// ============================================
@@ -34,6 +35,7 @@ pub struct NarrateRequest {
     pub characters: Vec<Character>,
     pub derivations: Vec<CharacterDerivation>,
     pub candidates: Vec<CharacterProseCandidates>,
+    pub plan: LlmScenePlan,
 }
 
 /// 叙事生成器抽象

@@ -474,6 +474,7 @@ gesture:
                     pov: pov.into(),
                     action,
                     sensation_refs: refs.iter().map(|raw| (*raw).to_string()).collect(),
+                    camera_beat_id: String::new(),
                 })
                 .collect(),
         }

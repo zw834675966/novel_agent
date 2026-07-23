@@ -9,7 +9,8 @@ use crate::models::{
     SceneId, StoryError,
 };
 use crate::prose::{
-    AssembledProse, CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator,
+    AssembledProse, CharacterProseCandidates, LlmScenePlan, NarrateRequest, ProseCandidate,
+    ProseGenerator,
 };
 use crate::text_guard::{MAX_MEMORY_CHARS, MAX_PLOT_REASON_CHARS, sanitize_free_text};
 use crate::vocab::Vocab;
@@ -423,11 +424,20 @@ impl StoryService {
         }
 
         // 6. 构造语义请求并调用 LLM
+        //    plan 为占位：Task 5 替换为真实 ScenePlanner::plan_scene() 输出。
+        let plan = LlmScenePlan::minimal(
+            &scene.objective_event,
+            &characters
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+        );
         let req = NarrateRequest {
             scene: scene.clone(),
             characters,
             derivations: sorted_derivations,
             candidates: sorted_candidates,
+            plan,
         };
         let narrative = self.prose_generator.narrate(&req).await?;
 

@@ -144,6 +144,7 @@ async fn service_with_partial_success_response() -> PartialFixture {
                     dialogue: None,
                 },
                 sensation_refs: vec!["visual.bloodstain".into()],
+                camera_beat_id: String::new(),
             },
             NarrativeBeat {
                 pov: cid_str,
@@ -153,6 +154,7 @@ async fn service_with_partial_success_response() -> PartialFixture {
                     dialogue: None,
                 },
                 sensation_refs: vec!["emotion.fabricated".into()],
+                camera_beat_id: String::new(),
             },
         ],
     };
@@ -286,6 +288,7 @@ emotion:
                 dialogue: None,
             },
             sensation_refs: vec!["emotion.hlm-c001-01".into()],
+            camera_beat_id: String::new(),
         }],
     };
     let prose_gen = Arc::new(RecordingProseGenerator::new(response));

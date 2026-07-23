@@ -28,4 +28,7 @@ pub struct NarrativeBeat {
     /// 本 beat 要呈现的描写片段 ID,只能从该 pov 角色的候选片段中选。
     #[serde(default)]
     pub sensation_refs: Vec<String>,
+    /// 对应 `LlmScenePlan` 中 `CameraBeat::beat_id`（空字符串 = 未关联镜头）。
+    #[serde(default)]
+    pub camera_beat_id: String,
 }
