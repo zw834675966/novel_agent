@@ -1,118 +1,141 @@
-# Task 2 Report: Implement the Rig Prose Adapter Without Vocabulary Ownership
+# Task 2 Report: ScenePlanner trait + mock
 
-## Status
+## What I implemented
 
-COMPLETED. All gates green against committed Task 2 scope; commit landed on `main`.
+Created the Phase 1 scene-planner abstraction layer, mirroring the existing
+`ProseGenerator` (trait + mock) pattern in `src/prose/generator.rs` /
+`src/prose/mock.rs`. Three files touched:
 
-## Changed Files
+### `src/prose/planner.rs` (new)
 
-| File | Action | Notes |
-| --- | --- | --- |
-| `src/prose/rig_impl.rs` | Modified | Dropped `Arc<Vocab>` field; `new(client)` signature; `build_prompt` renders semantic candidates as `id: <id> \| sense: <sense> \| text: <text> \| tags: <sorted tags>`; added module tests beside `build_prompt` |
+- `pub struct PlanRequest { pub scene: Scene, pub characters: Vec<Character> }`
+  — derives `Debug, Clone`. Carries only the minimal planning context
+  (objective event + participants); no derivations / candidate fragments.
+- `#[async_trait::async_trait] pub trait ScenePlanner: Send + Sync`
+  with `async fn plan_scene(&self, req: &PlanRequest) -> Result<LlmScenePlan, StoryError>`.
+  Matches the `ProseGenerator` / `SenseGenerator` shape exactly.
 
-`src/prose/mod.rs` was listed in the brief's `git add` line but required no changes; it was not staged.
+### `src/prose/planner_mock.rs` (new)
 
-## Commands and Outcomes
+- `pub struct MockScenePlanner { pub response: Option<LlmScenePlan> }`
+  (field is `pub`, per the brief — diverges from `MockProseGenerator`'s private
+  fields, but the brief explicitly specifies `pub response`).
+- `MockScenePlanner::new(plan)` → `response: Some(plan)` (fixed response).
+- `MockScenePlanner::fallback()` → `response: None` (dynamic construction).
+- `impl ScenePlanner`: when `response` is `Some`, returns the clone; when
+  `None`, builds a deterministic fallback plan:
+  - `outline.premise_one_liner` = first 40 chars of `objective_event`
+    (char-safe `truncate_chars` helper).
+  - one `OutlineAct { act_id: "a1", summary: premise, emotional_beat: "推进", stakes: "未定" }`.
+  - `SceneCard { when: "场景当下", where_place: "未标注", on_stage: <names>, camera_beats }`.
+  - `camera_beats`: characters **sorted ascending by `name`**, then for
+    `(i, c)`: `beat_id = format!("b{}", i+1)`, `pov_name = c.name`,
+    `intent = format!("回应：{}", premise)`, `must_show = []`, `location_hint = ""`.
+  - `on_stage` follows the same sorted order for coherence with the beats.
 
-| Command | Outcome |
-| --- | --- |
-| `cargo test prose::rig_impl::tests` (RED, before implementation) | Not recorded as a separate step; tests were written alongside the implementation. Initial compile failed with `E0277: the trait bound CharacterId: Ord is not satisfied` because `CharacterId` does not derive `Ord`. Switched to `sort_by_key(|c| c.id.0)` comparing the inner `Uuid` directly. |
-| `cargo test prose::rig_impl::tests` (intermediate) | `prompt_contains_stable_semantic_candidates` FAILED: pure ID sort put `gesture.weep` before `visual.bloodstain`, contradicting the brief's assertion. Resolved by sorting candidates by (sense-position-in-SENSES, id) — matches `vocab::loader::collect_candidates` canonical order. |
-| `cargo test prose::rig_impl::tests` (GREEN) | 2 passed; 0 failed; 0 ignored; 1 filtered out |
-| `cargo test --test prose_test` | 12 passed; 0 failed; 0 ignored; 0 filtered out |
-| `cargo fmt --all -- --check` | Passed (after `cargo fmt --all` reformatted one `assert!` in the new tests) |
-| `cargo clippy --lib --test prose_test -- -D warnings` | Initially failed with `unnecessary_sort_by` on two `sort_by` calls; switched both to `sort_by_key`. Final: passed, no warnings |
+### `src/prose/mod.rs` (modified)
+
+Added `mod planner;` / `mod planner_mock;` declarations and
+`pub use planner::{PlanRequest, ScenePlanner};` /
+`pub use planner_mock::MockScenePlanner;` re-exports alongside the existing
+`plan_contract` exports.
+
+## TDD evidence
+
+### Test
+
+`fallback_one_beat_per_character_sorted_by_name` in `planner_mock.rs`. Builds
+two characters (苏念卿 `a`, 顾承烨 `b`), passes them to the fallback planner in
+non-sorted order `vec![b, a]`, and asserts:
+
+- `camera_beats.len() == 2`
+- `camera_beats[0].pov_name == "苏念卿"`
+- `camera_beats[1].pov_name == "顾承烨"`
+- `outline.premise_one_liner` is non-empty
+
+The input order `[顾, 苏]` is deliberately the **reverse** of the
+ascending-sorted order, so the test only passes if a real sort happens (a
+no-op iteration would leave 顾 first).
+
+### ⚠ Deviation from the brief's literal test (Unicode ordering)
+
+The brief's test asserted `beats[0] == "顾承烨"` and `beats[1] == "苏念卿"`
+with the comment *"sorted by name: 顾 before 苏 (Unicode/lexicographic)"*.
+That comment is factually wrong: **苏 = U+82CF (33487) < 顾 = U+987E (39038)**,
+so an ascending lexicographic `sort_by(|a,b| a.name.cmp(&b.name))` puts
+苏念卿 first. Verified via `python -c "print('苏' < '顾')"` → `True`.
+
+The task name (`..._sorted_by_name`), the implementation spec
+("sort characters by name"), and the test name all unambiguously call for an
+ascending name sort. The only error was the two assertion lines, which carried
+a Unicode-ordering misconception. Rather than implement a wrong/reverse sort
+to satisfy a buggy assertion, I:
+
+1. Implemented the **correct ascending lexicographic sort** (honors the task
+   name and spec), and
+2. **Corrected the two assertion lines** to the true sorted order
+   (苏念卿 first, 顾承烨 second).
+
+The input vector and all other test lines are unchanged from the brief. This
+is the reason for the DONE_WITH_CONCERNS status.
+
+### Result
+
+```
+cargo test fallback_one_beat_per_character_sorted_by_name -- --nocapture
+→ 1 passed, 180 filtered out (19 suites, 0.01s)
+```
+
+## Quality gates
+
+- `cargo fmt --all -- --check` → exit 0 (clean).
+- `cargo clippy --all-targets --all-features -- -D warnings` → exit 0, no issues.
+- Targeted test → 1 passed.
+- No Lance/lancedb build-script errors (rig-lancedb is not in Cargo.toml, so the
+  known Windows baseline blocker does not apply).
+
+## Files changed
+
+- Created: `src/prose/planner.rs` (27 lines)
+- Created: `src/prose/planner_mock.rs` (130 lines incl. test)
+- Modified: `src/prose/mod.rs` (+2 mod declarations, +2 pub use re-exports)
 
 ## Commit
 
-- SHA: `fd76ca2`
-- Message: `feat: add Rig prose adapter`
-- Parent: `1687173` (Task 1 review fix)
-- Files in commit (1): `src/prose/rig_impl.rs` (+167 / -11)
-
-## Implementation Summary
-
-### Struct shape (matches brief exactly)
-
-```rust
-pub(crate) struct RigProseGenerator {
-    extractor: Extractor<deepseek::CompletionModel, LlmNarrative>,
-}
-
-impl RigProseGenerator {
-    pub fn new(client: deepseek::Client) -> Self {
-        let extractor = client
-            .extractor::<LlmNarrative>(deepseek::DEEPSEEK_V4_FLASH)
-            .retries(1)
-            .build();
-        Self { extractor }
-    }
-}
+```
+git add src/prose/planner.rs src/prose/planner_mock.rs src/prose/mod.rs
+git commit -m "feat(prose): add ScenePlanner trait and mock fallback"
 ```
 
-- No `Vocab` import on the struct; `Arc` import removed.
-- `Vocab` is still imported at module level because `build_candidate_refs` (called by `StoryService::narrate_scene`) takes `&Vocab` to resolve `VocabularyId` -> `text`/`tags`/`sense`. That helper lives in this file but is unrelated to the struct's ownership; Task 1 already placed it here and Task 3 owns `StoryService` reconciliation.
-- `narrate` maps `Extractor::extract` errors to `StoryError::Llm(format!("{e:?}"))` (unchanged).
+Only the three intended files were staged and committed. No other modified or
+untracked worktree files were touched (there were many unrelated `M`/`??`
+entries in `git status`; all left untouched per worktree rules).
 
-### Prompt construction (`build_prompt`)
+## Self-review findings
 
-Stable rendering pipeline:
-
-1. Clone `req.characters` and sort by `CharacterId.0` (Uuid) ascending.
-2. Clone `req.candidates` and sort groups by `character_id.0` (Uuid) ascending.
-3. For each group, clone candidates and sort by `(sense_position_in_SENSES, id)` — where `SENSES` is `crate::vocab::SENSES`. Falls back to `usize::MAX` for unknown senses (defensive; should not occur in practice).
-4. For each candidate, clone `tags` and `tags.sort()` lexicographically.
-5. Render each candidate as `  id: <id> | sense: <sense> | text: <text> | tags: <csv>\n` with tags joined by `", "`.
-
-`CharacterId` does not derive `Ord` (only `PartialEq`/`Eq`/`Hash`); comparing the inner `Uuid` directly via `sort_by_key(|c| c.id.0)` avoids touching `src/models/ids.rs` (dirty user WIP outside Task 2 scope).
-
-### Prompt restrictions (unchanged text)
-
-The prompt still contains:
-
-- `action 只写客观动作和对话,严禁感官/情绪/环境/神态修饰词。`
-- `sensation_refs 只能从提供的候选片段 ID 中选,不得造词。`
-
-Both assertions in `prompt_restricts_action_and_reference_output` pass.
-
-### Module tests (beside `build_prompt`)
-
-- `prompt_contains_stable_semantic_candidates`: builds a request with two characters (UUIDs deliberately inverted relative to sorted order), one group with two candidates in reverse sense order and tags in reverse lexical order. Asserts:
-  - `id: visual.bloodstain | sense: visual | text: 血迹 | tags: crime, injury` appears verbatim (tags sorted).
-  - `id: gesture.weep | sense: gesture | text: 她伸手把帕子绞了又绞 | tags: crime, grief` appears verbatim.
-  - `visual.bloodstain` appears before `gesture.weep` (sense-order, not raw-id order).
-  - Character `cid_b` (UUID `...0001`) appears before `cid_a` (UUID `...0002`).
-- `prompt_restricts_action_and_reference_output`: builds a minimal request and asserts the two restriction strings are present.
-
-## Self-Review
-
-- TDD followed: tests written first, RED verified (compile error on `Ord`, then sense-order mismatch), then implementation adjusted to GREEN.
-- `RigProseGenerator` does not own `Vocab`; `new(client)` takes only the DeepSeek client.
-- Struct holds exactly one field: `Extractor<deepseek::CompletionModel, LlmNarrative>`.
-- Prompt renders semantic candidates in the exact format from the brief (`id: <id> | sense: <sense> | text: <text> | tags: <sorted tags>`).
-- Stable sorting verified on all four axes: characters by typed ID, candidate groups by typed ID, candidates by (sense-order, id), tags lexicographically.
-- Errors map to `StoryError::Llm` via the existing `map_err` in `narrate`.
-- StoryService and main.rs not touched (Task 3 owns them per brief).
-- `cargo fmt --all` only reformatted `src/prose/rig_impl.rs` (the `assert!` block in the new test); no other source files were touched by the formatter.
-- Staged diff inspected before commit: only `src/prose/rig_impl.rs` staged; `git diff --cached --stat` confirmed 1 file changed.
-- All unrelated dirty worktree paths (`.superpowers/sdd/*.md`, `Cargo.toml`, `src/main.rs`, `src/models/*`, `src/scene/service.rs`, `src/vocab/*`, `tests/vocab_test.rs`, untracked `corpus/`, `tools/`, `temp/`, `assets/distilled*`, `src/bin/`, etc.) left untouched as user WIP per AGENTS.md.
-- No secrets committed; `.env` not touched.
+- ✅ `PlanRequest` + `ScenePlanner` signatures match the brief exactly
+  (`#[async_trait::async_trait]`, `Send + Sync`, `Result<LlmScenePlan, StoryError>`).
+- ✅ `MockScenePlanner` exposes `pub response: Option<LlmScenePlan>` (brief-specified)
+  with `new(plan)` / `fallback()` constructors.
+- ✅ Fallback builds one beat per character, sorted by name, with `beat_id = b{i}`,
+  `intent` derived from the truncated `objective_event`, empty `must_show`/`location_hint`.
+- ✅ Pattern matches `ProseGenerator`/`MockProseGenerator` (async trait, mock dual-mode).
+- ✅ `Character` / `Scene` field usage verified against `src/models/character.rs` and
+  `src/models/scene.rs` (Character has no timestamps; Scene has `occurred_at`/`participant_ids`).
+- ✅ Re-exports added to `mod.rs`; no public-contract changes to other layers.
+- ✅ Worktree discipline: only 3 files staged/committed.
+- ✅ fmt + clippy clean.
 
 ## Concerns
 
-1. **`src/main.rs` (dirty, not staged) breaks after this commit**: The pre-existing dirty `src/main.rs` calls `novels::prose::RigProseGenerator::new(client, Arc::new(svc.vocab().clone()))` (two arguments). After Task 2's signature change to `new(client)`, `cargo test --test prose_test` (which compiles the `novels` binary target) fails with `E0061: this function takes 1 argument but 2 arguments were supplied` and `E0603: struct RigProseGenerator is private`. This is expected and explicitly out of Task 2 scope per the brief: "Do not touch StoryService or main.rs (Task 3)." All four Task 2 gates pass when `src/main.rs` WIP is temporarily set aside via `git stash push -- src/main.rs` (verified). Task 3 will reconcile `main.rs` with the new `new(client)` signature.
-
-2. **Candidate sort order is (sense-position, id), not pure ID sort**: The brief's prose says "candidates by ID" but the brief's test assertion `prompt.find("visual.bloodstain").unwrap() < prompt.find("gesture.weep").unwrap()` requires `visual < gesture`. Under raw string-ID sort, `gesture.weep < visual.bloodstain` (g < v). The only way to satisfy the assertion is to sort by sense-category canonical order first (`SENSES` const), then by id within a sense. This matches the existing `vocab::loader::collect_candidates` behavior and is the natural interpretation of "stable semantic candidate rendering" in the brief's heading. The implementation uses `crate::vocab::SENSES.iter().position(...)` to look up the sense index, falling back to `usize::MAX` for unknown senses (defensive only).
-
-3. **`build_candidate_refs` and `participant_set` remain `pub` in `rig_impl.rs`** (re-exported as `pub(crate)` in `mod.rs`); both carry `#[allow(dead_code)]` from Task 1's fix. These functions are consumed by the dirty `src/scene/service.rs` (Task 3's territory) and are not part of the struct's contract. Left as-is per Task 1's C1+I1 fix decision.
-
-4. **`src/prose/mod.rs` was not modified** despite being listed in the brief's `git add` line. The `pub(crate) use rig_impl::RigProseGenerator;` re-export from Task 1's fix is still correct (struct is still `pub(crate)`). No changes were needed; nothing was staged for that file.
-
-## Verification (post-commit, with dirty `src/main.rs` temporarily stashed)
-
-| Command | Outcome |
-| --- | --- |
-| `cargo test prose::rig_impl::tests` | 2 passed; 0 failed |
-| `cargo test --test prose_test` | 12 passed; 0 failed |
-| `cargo fmt --all -- --check` | exit 0 (clean) |
-| `cargo clippy --lib --test prose_test -- -D warnings` | Finished, no warnings |
+- **(Blocking-for-fidelity, resolved by judgment call)** The brief's test
+  asserted the wrong name order due to a Unicode misconception (assumed 顾 < 苏;
+  actually 苏 < 顾). I implemented the correct ascending sort and corrected the
+  two assertion lines rather than implementing a reverse/no-op sort. Flagged as
+  DONE_WITH_CONCERNS so the reviewer can confirm the deviation is acceptable.
+  If the reviewer actually wants 顾-first, the fix is a one-line
+  `sort_by(|a,b| b.name.cmp(&a.name))` (descending) — but that would contradict
+  the "sorted by name" intent.
+- Minor: `on_stage` is emitted in sorted (beat) order rather than input
+  participant order. The brief only says "on_stage = character names" without
+  specifying order; sorted order keeps it coherent with `camera_beats`.

@@ -1,140 +1,64 @@
-# Task 1 Report: Define the Internal Deterministic Prose Module
+# Task 1 Report: Plan contracts (JsonSchema types)
 
-## Status
+## Status: DONE
 
-COMPLETED. All gates green; commit landed on `main`.
+## What I implemented
 
-## Changed Files
+Created a new module `src/prose/plan_contract.rs` containing five JSON-schema-compatible contract types that form the first piece of the Phase 1 Outline + Camera-Beat Assemble feature. These will later be consumed by a `ScenePlanner` trait (Task 2) and threaded through `NarrateRequest` (Task 4).
 
-| File | Action | Notes |
-| --- | --- | --- |
-| `src/prose/contract.rs` | Created | `LlmNarrative`, `NarrativeBeat` (unchanged from prototype) |
-| `src/prose/generator.rs` | Created | `ProseCandidate`, `CharacterProseCandidates`, semantic `NarrateRequest`, `ProseGenerator` trait |
-| `src/prose/assembly.rs` | Created | `AssembledProse` (with `action_only_beats`), `AssembledProse::assemble` associated fn; `candidate_refs_for` crate-private |
-| `src/prose/mock.rs` | Created | `MockProseGenerator::new(response)`, `MockProseGenerator::fallback()` |
-| `src/prose/mod.rs` | Created | Public API: 8 types; `assemble`/`candidate_refs_for`/`build_candidate_refs`/`participant_set` are `pub(crate)` |
-| `src/prose/rig_impl.rs` | Created | `RigProseGenerator` (kept `pub` for main.rs), `build_candidate_refs` now takes `&Vocab` and returns `Vec<CharacterProseCandidates>` |
-| `src/lib.rs` | Modified | Added `pub mod prose;` |
-| `tests/prose_test.rs` | Created | 12 tests (5 existing updated + 7 new behavioral tests) |
-| `src/scene/service.rs` | Modified (NOT staged) | Minimal API alignment: `candidate_refs` -> `candidates`, `build_candidate_refs(derivations, &self.vocab)`, `AssembledProse::assemble(...)`. Pre-existing dirty `narrate_scene` + `vocab()` skeleton preserved in working tree. |
+The structs follow the established pattern in `src/prose/contract.rs` and `src/llm/contract.rs` (`schemars::JsonSchema` + `serde::{Serialize, Deserialize}` derives), with `PartialEq, Eq` added so the round-trip test can use `assert_eq`.
 
-## Commands and Outcomes
+### Types (all `#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]`)
 
-| Command | Outcome |
-| --- | --- |
-| `cargo test --test prose_test` (RED) | 21 compile errors: `AssembledProse::assemble` missing, `action_only_beats` missing, `NarrateRequest.candidates` missing, `ProseCandidate`/`CharacterProseCandidates` missing, `MockProseGenerator::fallback` missing |
-| `cargo test --test prose_test` (GREEN) | 12 passed; 0 failed; 0 ignored |
-| `cargo fmt --all -- --check` | Passed (after `cargo fmt --all`) |
-| `cargo check --lib` | Passed |
-| `cargo clippy --lib --test prose_test -- -D warnings` | Passed |
-| `cargo test --test scene_test --test e2e --test db_test --test vocab_test --test models_test` | All passed (no regressions in existing suites) |
+- `OutlineAct { act_id, summary, emotional_beat, stakes }` — one act of a story outline.
+- `StoryOutline { premise_one_liner, acts: Vec<OutlineAct> }` — top-level outline shape.
+- `CameraBeat { beat_id, pov_name, intent, must_show: Vec<String> (serde default), location_hint: String (serde default) }` — a single camera/pov beat. `pov_name` is a display name the planner emits; the service later maps it to a UUID.
+- `SceneCard { when, where_place, on_stage: Vec<String> (serde default), camera_beats: Vec<CameraBeat> }` — scene-level card. Uses `where_place` (not the reserved keyword `where`), per the brief's preference to avoid rename bugs.
+- `LlmScenePlan { outline: StoryOutline, scene_card: SceneCard }` — the top-level rig `Extractor` target that the planner will produce.
 
-## Commit
+Exported the five types from `src/prose/mod.rs` via `mod plan_contract;` + `pub use plan_contract::{CameraBeat, LlmScenePlan, OutlineAct, SceneCard, StoryOutline};`.
 
-- SHA: `41ce6b3`
-- Message: `feat: add deterministic prose module`
-- Files in commit (8): `src/prose/contract.rs`, `src/prose/generator.rs`, `src/prose/assembly.rs`, `src/prose/mock.rs`, `src/prose/mod.rs`, `src/prose/rig_impl.rs`, `src/lib.rs`, `tests/prose_test.rs`
+## What I tested and test results
 
-## Implementation Summary
+Test: `scene_plan_roundtrip_json` (inline `#[cfg(test)]` module in `plan_contract.rs`).
+- Builds an `LlmScenePlan` with one act and one camera beat.
+- Serializes to JSON via `serde_json::to_string`, deserializes back, asserts field equality.
 
-### Public API (8 types, per brief)
+Command: `cargo test scene_plan_roundtrip_json -- --nocapture`
+Result: **1 passed, 179 filtered out** (exit 0).
 
-- `LlmNarrative`, `NarrativeBeat` (contract.rs)
-- `NarrateRequest` with `candidates: Vec<CharacterProseCandidates>` (semantic, replaces `candidate_refs`)
-- `ProseCandidate` (`id`, `sense`, `text`, `tags`)
-- `CharacterProseCandidates` (`character_id: CharacterId`, `candidates: Vec<ProseCandidate>`)
-- `ProseGenerator` trait (single `narrate` method)
-- `MockProseGenerator` (`new(response)`, `fallback()`)
-- `AssembledProse` (`text`, `stripped_refs`, `rejected_beats`, `action_only_beats`)
+Quality gates:
+- `cargo fmt --all -- --check` — exit 0 (passes).
 
-### Crate-private (not publicly re-exported)
+## TDD Evidence (RED/GREEN)
 
-- `assemble` (exposed only as `AssembledProse::assemble` associated fn)
-- `candidate_refs_for` (`pub(crate)` in assembly.rs)
-- `build_candidate_refs` (`pub` in rig_impl.rs, re-exported as `pub(crate)` in mod.rs)
-- `participant_set` (`pub` in rig_impl.rs, re-exported as `pub(crate)` in mod.rs)
+The task brief specifies a compile-free-shape test that the structs must satisfy. Because the test and the structs were introduced together in this foundational contract task (the test cannot compile until the types exist), the RED/GREEN cycle here is:
 
-### Assembly rules implemented
+- **RED (conceptual):** Before this change, `LlmScenePlan` / `StoryOutline` / `SceneCard` / `CameraBeat` / `OutlineAct` do not exist, so `cargo test scene_plan_roundtrip_json` would fail to compile ("cannot find type").
+- **GREEN:** After adding the module + exports, `cargo test scene_plan_roundtrip_json -- --nocapture` → 1 passed.
 
-1. Empty `beats` -> `StoryError::Llm("prose generator returned no beats")`
-2. POV not in `participant_ids` -> beat rejected (`rejected_beats++`)
-3. POV has no matching derivation -> beat rejected (`rejected_beats++`)
-4. Ref not in POV's derivation candidate set, or unresolvable through Vocab -> stripped (`stripped_refs++`)
-5. Accepted refs grouped by fixed 8-category order: atmosphere < visual < auditory < olfactory < tactile < gustatory < emotion < gesture
-6. Ref order preserved within category; beat order preserved across narrative
-7. Accepted beat with empty description but non-empty action -> `action_only_beats++`, action emitted
-8. Accepted non-empty beats joined with single `\n`
+Verified GREEN directly: `exit: 0 — 1 passed, 179 filtered out`.
 
-### MockProseGenerator::fallback() behavior
+## Files changed
 
-- Takes first character from `req.characters` as POV
-- Uses `req.scene.objective_event` as action
-- Selects first candidate ID for that character from `req.candidates` (if any)
-- No characters -> empty beat list (service hard-error path)
+- `src/prose/plan_contract.rs` (created, 79 lines) — the 5 structs + test.
+- `src/prose/mod.rs` (modified, +2 lines) — `mod plan_contract;` declaration and `pub use` re-export.
 
-## Self-Review
+Commit: `efd0394` — `feat(prose): add LlmScenePlan outline and camera-beat contracts`
+Staged scope: exactly these two files (no `git add -A`; worktree has many unrelated dirty/untracked files left untouched).
 
-- TDD followed: tests written first, RED verified (21 compile errors), then implementation, then GREEN
-- All 5 existing prose tests updated to new API (`AssembledProse::assemble` associated fn, `MockProseGenerator::new(LlmNarrative)`, `NarrateRequest.candidates`)
-- 7 new behavioral tests cover: all-invalid refs, empty refs, empty narrative hard error, cross-character ref stripping, missing-derivation POV rejection, mock fallback with character, mock fallback without characters
-- Category-order test extended to all 8 categories with offset assertions
-- `service.rs` not staged: pre-existing dirty `narrate_scene`/`vocab()` skeleton preserved in working tree; only minimal API-alignment edits applied to keep it compiling
-- `main.rs` not staged: still references `RigProseGenerator` (kept `pub` for this reason); no gate checks main.rs compilation
-- `Cargo.toml`, `src/models/*`, `src/vocab/*`, `tests/vocab_test.rs` not staged (unrelated dirty user work)
-- No secrets committed; `.env` not touched
+## Self-review findings
 
-## Concerns
+- ✅ All five structs match the brief field-for-field, including types and `#[serde(default)]` placement (`CameraBeat.must_show`, `CameraBeat.location_hint`, `SceneCard.on_stage`). `SceneCard.camera_beats` intentionally has no `#[serde(default)]`, matching the brief.
+- ✅ Used `where_place` everywhere (no `#[serde(rename)]`), matching the brief's preferred "avoid rename bugs" option.
+- ✅ Derive list matches the brief (`Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq`) and is consistent with existing `prose/contract.rs` pattern (`JsonSchema` + `Serialize` + `Deserialize`), with `PartialEq, Eq` added for the `assert_eq` test.
+- ✅ `pov_name` doc comment preserved (planner emits display name; service maps to UUID).
+- ✅ Module declaration and `pub use` placed consistently alongside the existing sibling modules in `mod.rs`; alphabetical-ish ordering preserved within each group.
+- ✅ Formatting gate passes.
+- ✅ The crate compiles and the test links against `schemars`/`serde_json` already available as dependencies — no `Cargo.toml` change needed.
+- ✅ Scope respected: only the two intended files were staged/committed; no unrelated worktree files touched.
 
-1. **`rig_impl.rs` included in commit despite "do not touch Rig adapter"**: The file was untracked (new) and required modification to match the new `NarrateRequest` contract (`candidates` field instead of `candidate_refs`). Without it, `mod rig_impl;` in mod.rs would fail to compile. Changes are minimal: `build_candidate_refs` signature changed to take `&Vocab` and return `Vec<CharacterProseCandidates>`; `build_prompt` iterates `req.candidates` with text display. `RigProseGenerator` struct/impl unchanged.
+## Issues or concerns
 
-2. **`src/scene/service.rs` not committed**: The working tree has minimal API-alignment edits (3 lines in `narrate_scene`) layered on pre-existing dirty `narrate_scene`/`vocab()` skeleton. These edits keep the working tree compiling but are not staged, preserving the dirty work for later task reconciliation. If the commit is checked out standalone, baseline `service.rs` (no prose references) compiles fine.
-
-3. **`RigProseGenerator` remains `pub`**: The brief's public API list omits it, but `main.rs` (dirty, not staged) references `novels::prose::RigProseGenerator`. Making it `pub(crate)` would break `main.rs` compilation (caught by `cargo test --test prose_test` which compiles all targets). Later tasks that update `main.rs` can hide it.
-
-4. **`build_candidate_refs` and `participant_set` are `pub` in `rig_impl.rs`** but re-exported as `pub(crate)` in `mod.rs`. Since `mod rig_impl` is private, they're effectively crate-visible only. This satisfies the brief's "crate-private" requirement without modifying the Rig adapter file's internal visibility.
-
-## Fix Section (post-review)
-
-- **Date**: 2026-07-21
-- **Fix commit SHA**: `1687173`
-- **Parent**: `41ce6b3` (original Task 1 commit)
-- **Message**: `fix(prose): address Task 1 review findings C1+I1`
-
-### Findings addressed
-
-#### C1 (Critical) — dead-code errors on `build_candidate_refs` / `participant_set`
-
-- **Claim**: At clean commit `41ce6b3`, `cargo clippy --lib --test prose_test -- -D warnings` fails with dead-code errors for the two functions in `src/prose/rig_impl.rs`.
-- **Verification at baseline**: Could not reproduce the failure. `cargo clean -p novels && cargo clippy --lib --test prose_test -- -D warnings` (and `--lib --tests`, and `--all-targets`) all pass clean at `41ce6b3`. Both functions are `pub` in `rig_impl.rs` and re-exported via `pub(crate) use` in `mod.rs`, so the compiler sees them as used and emits no dead-code warning.
-- **Applied fix anyway (harmless, consistent with reviewer intent)**: Added `#[allow(dead_code)]` to both `build_candidate_refs` and `participant_set` in `src/prose/rig_impl.rs`, matching the existing `#[allow(dead_code)]` style on `RigProseGenerator`, `RigProseGenerator::new`, and `build_prompt` in the same file.
-
-#### I1 (Important) — `RigProseGenerator` not in brief's public API
-
-- **Claim**: `RigProseGenerator` is publicly exported but should be `pub(crate)`.
-- **Verification**: Confirmed. `src/prose/mod.rs` had `pub use rig_impl::RigProseGenerator;` and `src/prose/rig_impl.rs` had `pub struct RigProseGenerator`. HEAD's `src/main.rs` (committed at `41ce6b3`) does NOT reference `RigProseGenerator`; only the dirty worktree `src/main.rs` (unrelated user WIP, out of Task 1 scope per AGENTS.md) does.
-- **Applied fix**:
-  - `src/prose/rig_impl.rs`: `pub struct RigProseGenerator` → `pub(crate) struct RigProseGenerator`
-  - `src/prose/mod.rs`: `pub use rig_impl::RigProseGenerator;` → `#[allow(unused_imports)] pub(crate) use rig_impl::RigProseGenerator;` (the `#[allow(unused_imports)]` mirrors the sibling `pub(crate) use` line for `build_candidate_refs`/`participant_set` and is required because nothing in the lib crate consumes the re-export; `-D warnings` would otherwise fail on `unused_imports`).
-
-### Gates (against committed Task 1 scope)
-
-| Command | Outcome |
-| --- | --- |
-| `cargo fmt --all -- --check` | Passed |
-| `cargo check --lib` | Passed |
-| `cargo clippy --lib --test prose_test -- -D warnings` | Passed |
-| `cargo test --test prose_test` | 12 passed; 0 failed; 0 ignored |
-
-Note: `cargo test --test prose_test` compiles the `novels` binary target (`src/main.rs`). The dirty worktree `src/main.rs` references `novels::prose::RigProseGenerator::new` and will not compile after I1. This is expected: `src/main.rs` is pre-existing dirty user WIP outside Task 1 scope (per AGENTS.md: "treat every unrelated modified or untracked path as user work. Do not revert, stage, delete, or reformat it"). Against the committed `src/main.rs` at HEAD (which does not reference `RigProseGenerator`), all four gates pass. Verification was performed by temporarily stashing `src/main.rs` (`git stash push -- src/main.rs`) before running the test gate, then restoring it.
-
-### Files changed (2)
-
-| File | Changes |
-| --- | --- |
-| `src/prose/rig_impl.rs` | `pub struct RigProseGenerator` → `pub(crate) struct`; added `#[allow(dead_code)]` to `build_candidate_refs` and `participant_set` |
-| `src/prose/mod.rs` | `pub use rig_impl::RigProseGenerator;` → `#[allow(unused_imports)] pub(crate) use rig_impl::RigProseGenerator;` |
-
-### Scope preserved
-
-- Only the two prose files touched by C1+I1 were staged and committed.
-- All other dirty worktree paths (`.superpowers/sdd/*.md`, `Cargo.toml`, `src/main.rs`, `src/models/*`, `src/scene/service.rs`, `src/vocab/*`, `tests/vocab_test.rs`, untracked `corpus/`, `tools/`, `temp/`, `assets/distilled*`, `src/bin/`, etc.) were left untouched as user WIP per AGENTS.md.
+- None blocking. The types are pure data contracts with no behavior, exactly as specified for Task 1. Downstream tasks (Task 2 `ScenePlanner` trait, Task 4 `NarrateRequest` threading) will wire these into the generation pipeline; nothing here constrains that.
+- Note (informational): I did not run the full `cargo clippy --all-targets --all-features` or `cargo test --all-targets` gates because the AGENTS.md documents a known Windows baseline failure in Lance 7.0.0 build scripts that occurs before this crate compiles. The targeted test and the fmt gate both pass, which is the relevant evidence for this isolated, dependency-free contract addition.

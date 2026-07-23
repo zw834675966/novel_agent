@@ -1,95 +1,141 @@
-### Task 2: Implement the Rig Prose Adapter Without Vocabulary Ownership
+### Task 2: ScenePlanner trait + mock
 
 **Files:**
-- Create or reconcile: `src/prose/rig_impl.rs`
+- Create: `src/prose/planner.rs`
+- Create: `src/prose/planner_mock.rs`
 - Modify: `src/prose/mod.rs`
-- Test: `src/prose/rig_impl.rs`
+- Test: `src/prose/planner_mock.rs` unit tests
 
 **Interfaces:**
-- Consumes `NarrateRequest` semantic candidate metadata from Task 1.
-- Produces `RigProseGenerator::new(client: deepseek::Client) -> Self`.
-- Implements `ProseGenerator` through one `Extractor<deepseek::CompletionModel, LlmNarrative>`.
+- Consumes: `LlmScenePlan` from Task 1; `crate::models::{Character, Scene}`
+- Produces:
+  - `pub struct PlanRequest { pub scene: Scene, pub characters: Vec<Character> }`
+  - `#[async_trait] pub trait ScenePlanner: Send + Sync { async fn plan_scene(&self, req: &PlanRequest) -> Result<LlmScenePlan, StoryError>; }`
+  - `pub struct MockScenePlanner { pub response: Option<LlmScenePlan> }`
+  - `MockScenePlanner::fallback()` builds one beat per character, ordered by character name, beat_id `b{i}`, intent from truncated `objective_event`
+  - `MockScenePlanner::new(plan)` returns fixed plan
 
-- [ ] **Step 1: Write failing adapter tests**
-
-Add module tests beside `build_prompt`:
-
+**Character type (actual fields from `src/models/character.rs`):**
 ```rust
-#[test]
-fn prompt_contains_stable_semantic_candidates() {
-    let request = request_with_unsorted_candidates();
-    let prompt = build_prompt(&request);
-
-    assert!(prompt.contains(
-        "id: visual.bloodstain | sense: visual | text: 血迹 | tags: crime, injury"
-    ));
-    assert!(prompt.find("visual.bloodstain").unwrap()
-        < prompt.find("gesture.weep").unwrap());
+pub struct Character {
+    pub id: CharacterId,
+    pub name: String,
+    pub personality: Vec<String>,
+    pub skills: Vec<String>,
 }
+```
+Note: Character does NOT have `created_at`/`updated_at` fields. Only `id`, `name`, `personality`, `skills`.
 
-#[test]
-fn prompt_restricts_action_and_reference_output() {
-    let prompt = build_prompt(&minimal_request());
-    assert!(prompt.contains("action 只写客观动作和对话"));
-    assert!(prompt.contains("sensation_refs 只能从提供的候选"));
+**Scene type (verify from `src/models/scene.rs`):**
+```rust
+pub struct Scene {
+    pub id: SceneId,
+    pub objective_event: String,
+    pub occurred_at: DateTime<Utc>,
+    pub participant_ids: Vec<CharacterId>,
 }
 ```
 
-- [ ] **Step 2: Run tests and confirm red state**
+- [ ] **Step 1: Write failing test (mock fallback beat count)**
 
-Run:
-
-```text
-cargo test prose::rig_impl::tests
-```
-
-Expected: FAIL because the current adapter owns `Arc<Vocab>`, prints only IDs, and does not sort semantic metadata.
-
-- [ ] **Step 3: Implement the minimal adapter**
-
-Use this shape:
+In `src/prose/planner_mock.rs` (after types exist):
 
 ```rust
-pub struct RigProseGenerator {
-    extractor: Extractor<deepseek::CompletionModel, LlmNarrative>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Character, CharacterId, Scene, SceneId};
+    use chrono::Utc;
+    use uuid::Uuid;
 
-impl RigProseGenerator {
-    pub fn new(client: deepseek::Client) -> Self {
-        let extractor = client
-            .extractor::<LlmNarrative>(deepseek::DEEPSEEK_V4_FLASH)
-            .retries(1)
-            .build();
-        Self { extractor }
+    fn char(name: &str) -> Character {
+        Character {
+            id: CharacterId(Uuid::new_v4()),
+            name: name.into(),
+            personality: vec![],
+            skills: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_one_beat_per_character_sorted_by_name() {
+        let a = char("苏念卿");
+        let b = char("顾承烨");
+        let scene = Scene {
+            id: SceneId(Uuid::new_v4()),
+            objective_event: "破产清算：封条与撤离".into(),
+            occurred_at: Utc::now(),
+            participant_ids: vec![a.id, b.id],
+        };
+        let planner = MockScenePlanner::fallback();
+        let plan = planner
+            .plan_scene(&PlanRequest {
+                scene,
+                characters: vec![b.clone(), a.clone()],
+            })
+            .await
+            .unwrap();
+        assert_eq!(plan.scene_card.camera_beats.len(), 2);
+        // sorted by name: 顾 before 苏 (Unicode/lexicographic - assert stable sort by name)
+        assert_eq!(plan.scene_card.camera_beats[0].pov_name, "顾承烨");
+        assert_eq!(plan.scene_card.camera_beats[1].pov_name, "苏念卿");
+        assert!(!plan.outline.premise_one_liner.is_empty());
     }
 }
 ```
 
-Prompt construction must clone and sort characters by typed ID, character candidate groups by typed ID, candidates by ID, and tags lexicographically. Render candidates as:
+**Note:** If `Character` fields differ in this repo, match `src/models/character.rs` exactly (copy from existing tests in `tests/e2e.rs` or `tests/scene_test.rs`).
 
-```text
-id: visual.bloodstain | sense: visual | text: 血迹 | tags: crime, injury
+- [ ] **Step 2: Implement `planner.rs` + `planner_mock.rs`**
+
+```rust
+// planner.rs
+use crate::models::{Character, Scene, StoryError};
+use super::plan_contract::LlmScenePlan;
+
+#[derive(Debug, Clone)]
+pub struct PlanRequest {
+    pub scene: Scene,
+    pub characters: Vec<Character>,
+}
+
+#[async_trait::async_trait]
+pub trait ScenePlanner: Send + Sync {
+    async fn plan_scene(&self, req: &PlanRequest) -> Result<LlmScenePlan, StoryError>;
+}
 ```
 
-The adapter must not import `Vocab`, query `Db`, validate references, or assemble prose. Extraction errors map to `StoryError::Llm`.
-
-- [ ] **Step 4: Run adapter and prose tests**
-
-Run:
-
-```text
-cargo test prose::rig_impl::tests
-cargo test --test prose_test
-cargo fmt --all -- --check
-cargo clippy --lib --test prose_test -- -D warnings
+```rust
+// planner_mock.rs - fallback builds:
+// outline.premise_one_liner = first 40 chars of objective_event
+// one OutlineAct { act_id: "a1", summary: premise, emotional_beat: "推进", stakes: "未定" }
+// SceneCard.when = "场景当下", where_place = "未标注"
+// on_stage = character names
+// camera_beats: sort characters by name; for (i,c) in enumerate:
+//   beat_id = format!("b{}", i+1)
+//   pov_name = c.name
+//   intent = format!("回应：{}", truncated event)
+//   must_show = []
+//   location_hint = ""
 ```
 
-Expected: all tests and checks pass.
+- [ ] **Step 3: Export in `mod.rs`**
+
+```rust
+mod planner;
+mod planner_mock;
+pub use planner::{PlanRequest, ScenePlanner};
+pub use planner_mock::MockScenePlanner;
+```
+
+- [ ] **Step 4: Run test**
+
+Run: `cargo test fallback_one_beat_per_character_sorted_by_name -- --nocapture`  
+Expected: PASS
 
 - [ ] **Step 5: Commit**
 
-```text
-git add src/prose/rig_impl.rs src/prose/mod.rs
-git commit -m "feat: add Rig prose adapter"
+```bash
+git add src/prose/planner.rs src/prose/planner_mock.rs src/prose/mod.rs
+git commit -m "feat(prose): add ScenePlanner trait and mock fallback"
 ```
-

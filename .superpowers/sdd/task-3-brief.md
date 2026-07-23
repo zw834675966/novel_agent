@@ -1,188 +1,157 @@
-### Task 3: Deepen StoryService Around Narration
+### Task 3: Assemble preserves sensation_refs order (kill sense sort)
 
 **Files:**
-- Modify: `src/scene/service.rs`
-- Modify: `src/models/error.rs`
-- Modify: `src/main.rs`
-- Modify: `tests/scene_test.rs`
-- Modify: `tests/e2e.rs`
-- Modify: `tests/prose_test.rs`
+- Modify: `src/prose/assembly.rs` (`assemble_beat_descriptions` + doc comments + tests)
+- Test: unit tests in `assembly.rs`
 
-**Interfaces:**
-- Consumes Task 1 `ProseGenerator`, `NarrateRequest`, internal assembly, and Task 2 Rig adapter.
-- Produces `StoryService::new(db, vocab, sense_generator, prose_generator)` and `StoryService::narrate_scene(scene_id, derivations)`.
-- Removes the public `StoryService::vocab()` escape hatch and per-call generator argument.
+**Base commit:** `943a16a`
 
-- [ ] **Step 1: Write failing StoryService narration tests**
+**Goal:** Stop reordering quotes by fixed sense-category order (atmosphere→visual→…→gesture). Instead, join legal quotes in **input `refs` encounter order**. This is the core Phase 1 fix: assemble in camera-beat/ref order, not sense-sorted collage.
 
-Add service-level tests in `tests/prose_test.rs`:
+---
+
+## Current code (to change)
+
+### `assemble_beat_descriptions` (line ~322)
+
+Currently after resolving refs and applying source isolation, it sorts quotes by a fixed 8-category order:
 
 ```rust
-#[tokio::test]
-async fn missing_scene_fails_before_prose_generator() {
-    let recorder = Arc::new(RecordingProseGenerator::default());
-    let service = service_fixture(recorder.clone()).await;
-
-    let result = service
-        .narrate_scene(SceneId(Uuid::new_v4()), &[])
-        .await;
-
-    assert!(matches!(result, Err(StoryError::SceneNotFound(_))));
-    assert_eq!(recorder.calls(), 0);
+// Lines ~357-384: THIS IS THE SENSE SORT TO REMOVE
+let order = [
+    "atmosphere", "visual", "auditory", "olfactory",
+    "tactile", "gustatory", "emotion", "gesture",
+];
+let mut by_cat: HashMap<String, Vec<String>> = HashMap::new();
+for q in &resolved {
+    by_cat.entry(q.sense.clone()).or_default().push(q.text.clone());
 }
-
-#[tokio::test]
-async fn derivation_from_another_scene_fails_before_generator() {
-    let fixture = service_with_scene().await;
-    let wrong = derivation_for(SceneId(Uuid::new_v4()), fixture.character_id);
-    let result = fixture.service.narrate_scene(fixture.scene_id, &[wrong]).await;
-
-    assert!(matches!(result, Err(StoryError::InvalidNarrationContext(_))));
-    assert_eq!(fixture.generator.calls(), 0);
-}
-
-#[tokio::test]
-async fn duplicate_character_derivations_fail_before_generator() {
-    let fixture = service_with_scene().await;
-    let derivation = derivation_for(fixture.scene_id, fixture.character_id);
-    let result = fixture
-        .service
-        .narrate_scene(fixture.scene_id, &[derivation.clone(), derivation])
-        .await;
-
-    assert!(matches!(result, Err(StoryError::InvalidNarrationContext(_))));
-    assert_eq!(fixture.generator.calls(), 0);
-}
-
-#[tokio::test]
-async fn narration_returns_source_text_and_quality_counters() {
-    let fixture = service_with_partial_success_response().await;
-    let prose = fixture
-        .service
-        .narrate_scene(fixture.scene_id, &fixture.derivations)
-        .await
-        .unwrap();
-
-    assert!(prose.text.contains("血迹"));
-    assert!(prose.text.contains("她俯身查看。"));
-    assert_eq!(prose.stripped_refs, 1);
-    assert_eq!(prose.action_only_beats, 1);
+let mut parts: Vec<String> = Vec::new();
+for cat in order {
+    if let Some(texts) = by_cat.get(cat) {
+        for t in texts { parts.push(t.clone()); }
+    }
 }
 ```
 
-`RecordingProseGenerator` increments an `AtomicUsize`, records cloned requests behind a `Mutex`, and returns a configured `LlmNarrative`.
+### What to change
 
-- [ ] **Step 2: Run focused tests and confirm red state**
-
-Run:
-
-```text
-cargo test --test prose_test
-```
-
-Expected: FAIL because `StoryService` does not own `ProseGenerator`, accepts it per call, and lacks `InvalidNarrationContext`.
-
-- [ ] **Step 3: Add explicit narration-context errors**
-
-Add one error variant:
+Replace the above block with direct iteration over `resolved` (which is already in ref-encounter order; source isolation uses `Vec::retain` which is stable, so relative order is preserved):
 
 ```rust
-#[error("invalid narration context: {0}")]
-InvalidNarrationContext(String),
+// Preserve ref input order (camera-beat order); do NOT sort by sense category.
+let parts: Vec<String> = resolved.iter().map(|q| q.text.clone()).collect();
+let quotes = parts.clone();
+let desc = join_quotes_with_rhythm(&parts);
 ```
 
-Use it for wrong-scene derivations, duplicate character derivations, missing participant characters, and derivations for non-participants. Keep generator/extractor failures as `StoryError::Llm`.
+Keep everything else in `assemble_beat_descriptions` unchanged: the ref resolution loop, the allowed-set filter, the VocabularyId parse, the book-source isolation (dominant_book_source + retain). Only the sort step is removed.
 
-- [ ] **Step 4: Make StoryService own the prose seam**
+### Doc comment update (line ~78)
 
-Rename the existing sense field for clarity and add the prose field:
+In the `assemble` method doc comment, change:
+```
+///   4. 合法 ref 按固定 8 类顺序拼装:atmosphere -> visual -> auditory -> olfactory -> tactile -> gustatory -> emotion -> gesture
+```
+to:
+```
+///   4. 合法 ref 按 sensation_refs 出现顺序拼装(Hard 原句;镜头序由 beat 序列表达)
+```
+
+---
+
+## Tests
+
+### Step 1: Write new failing test
+
+Add this test to the `#[cfg(test)] mod tests` block:
 
 ```rust
-pub struct StoryService {
-    db: Db,
-    vocab: Vocab,
-    sense_generator: Arc<dyn SenseGenerator>,
-    prose_generator: Arc<dyn ProseGenerator>,
+#[test]
+fn assemble_preserves_ref_order_not_sense_order() {
+    // vocab: visual.bloodstain="血迹", atmosphere.coldnight="夜凉如水"
+    // beat refs: [visual.bloodstain, atmosphere.coldnight]  // visual before atmosphere
+    // OLD behavior: atmosphere first -> "夜凉如水…血迹"
+    // NEW: preserve ref order -> starts with "血迹"
+    let action = crate::models::StructuredAction {
+        kind: crate::models::ActionKind::LookAt,
+        target: Some("地面".into()),
+        dialogue: None,
+    };
+    let prose = AssembledProse::assemble(
+        &narrative(vec![(
+            CHARACTER_A,
+            action,
+            &["visual.bloodstain", "atmosphere.coldnight"],
+        )]),
+        &sample_vocab(),
+        &[derivation(
+            CHARACTER_A,
+            &["visual.bloodstain", "atmosphere.coldnight"],
+        )],
+        &participants(&[CHARACTER_A]),
+    )
+    .unwrap();
+    let pos_blood = prose.text.find("血迹").unwrap();
+    let pos_night = prose.text.find("夜凉如水").unwrap();
+    assert!(
+        pos_blood < pos_night,
+        "ref order must win over sense order: {}",
+        prose.text
+    );
 }
 ```
 
-Constructor:
+### Step 2: Run new test - expect FAIL
 
+Run: `cargo test assemble_preserves_ref_order_not_sense_order -- --nocapture`
+Expected: FAIL (atmosphere sorted before visual, so 夜凉如水 appears before 血迹).
+
+### Step 3: Implement the fix (remove sense sort)
+
+As described above: replace the by_cat sort with direct `resolved` iteration.
+
+### Step 4: Update `orders_all_eight_categories` test
+
+The existing test `orders_all_eight_categories` (line ~509) inputs refs in reverse sense order:
 ```rust
-pub fn new(
-    db: Db,
-    vocab: Vocab,
-    sense_generator: Arc<dyn SenseGenerator>,
-    prose_generator: Arc<dyn ProseGenerator>,
-) -> Self;
+let ids = [
+    "gesture.weep", "emotion.sorrow", "gustatory.bitter", "tactile.coldhand",
+    "olfactory.bloodsmell", "auditory.footstep", "visual.bloodstain", "atmosphere.coldnight",
+];
 ```
-
-Before invoking the prose generator, `narrate_scene` must:
-
-1. Load the scene or return `SceneNotFound`.
-2. Require every derivation `scene_id` to equal the requested scene.
-3. Require every derivation character to be a participant.
-4. Reject duplicate character derivations.
-5. Load every participant character or return `CharacterNotFound`.
-6. Build candidate metadata from service-owned `Vocab`; include only IDs present in each derivation and currently resolvable in `Vocab`.
-7. Sort characters, derivations, candidate groups, candidates, and tags before creating `NarrateRequest`.
-8. Call `self.prose_generator.narrate(&request)`.
-9. Invoke internal assembly and return `AssembledProse`.
-
-Remove `StoryService::vocab()` and the generator parameter from `narrate_scene`.
-
-- [ ] **Step 5: Update all constructor call sites**
-
-Update all nine current `StoryService::new` calls in `src/main.rs`, `tests/scene_test.rs`, and `tests/e2e.rs`. Existing derivation-only tests inject `Arc::new(MockProseGenerator::fallback())`.
-
-Production startup calls `deepseek::Client::from_env()` once:
-
+and asserts the OLD atmosphere-first output:
 ```rust
-let (sense_generator, prose_generator): (
-    Arc<dyn SenseGenerator>,
-    Arc<dyn ProseGenerator>,
-) = match deepseek::Client::from_env() {
-    Ok(client) => (
-        Arc::new(RigSenseGenerator::new(client.clone(), vocab.clone())),
-        Arc::new(RigProseGenerator::new(client)),
-    ),
-    Err(_) => (
-        Arc::new(MockSenseGenerator::new(/* existing deterministic output */)),
-        Arc::new(MockProseGenerator::fallback()),
-    ),
-};
+assert_eq!(
+    prose.text,
+    "夜凉如水，血迹，脚步声，血腥味，冰凉的手，苦涩，心中未免悔恨，她伸手把帕子绞了又绞。她进入房间"
+);
 ```
 
-If DeepSeek client is not `Clone`, create both clients inside the same success branch with `deepseek::Client::from_env()` and keep the branch atomic; never configure only one production adapter.
+This test must be updated to expect **input order** (gesture first, atmosphere last). Rename it to `preserves_ref_input_order_all_categories` and update the assertion to the new expected text. The implementer should compute the exact expected string by running the test after the fix and using the actual output, then verify it matches ref-input order: gesture → emotion → gustatory → tactile → olfactory → auditory → visual → atmosphere.
 
-Call narration as:
+**Important:** The `join_quotes_with_rhythm` function inserts `，` between short (≤6 char) lemmas and `。` between longer ones. All sample_vocab texts here are ≤10 chars. Trace the exact separator placement for the new order and assert the precise string.
 
-```rust
-let prose = service.narrate_scene(scene_id, &derivations).await?;
+### Step 5: Check other tests
+
+Review ALL other tests in `assembly.rs` for any that assume atmosphere-first ordering. Most tests use single-sense refs (e.g., only `emotion.sorrow`) so they should be unaffected. The `book_source_isolation_drops_minority_corpus` test uses `contains` checks (not exact position), so it should pass unchanged.
+
+Run: `cargo test --lib prose::assembly -- --nocapture`
+Expected: all PASS.
+
+### Step 6: Commit
+
+```bash
+git add src/prose/assembly.rs
+git commit -m "fix(prose): join quotes in ref order instead of sense order"
 ```
 
-Print `stripped_refs`, `rejected_beats`, and `action_only_beats` in the demo.
+---
 
-- [ ] **Step 6: Run focused and full tests**
+## What NOT to change
 
-Run:
-
-```text
-cargo test --test prose_test
-cargo test --test scene_test
-cargo test --test e2e
-cargo fmt --all -- --check
-cargo test --all-targets
-cargo check --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-Expected: all tests and quality gates pass.
-
-- [ ] **Step 7: Commit**
-
-```text
-git add src/scene/service.rs src/models/error.rs src/main.rs tests/scene_test.rs tests/e2e.rs tests/prose_test.rs
-git commit -m "feat: integrate deterministic scene narration"
-```
-
+- Do NOT modify `join_quotes_with_rhythm` - the rhythm punctuation logic stays.
+- Do NOT modify `book_source_isolation` / `dominant_book_source` / `retain` - source isolation stays, just without reordering.
+- Do NOT modify `assemble()` main function signature or flow - only `assemble_beat_descriptions` internals change.
+- Do NOT modify any other file.
+- Do NOT touch unrelated dirty worktree files.
