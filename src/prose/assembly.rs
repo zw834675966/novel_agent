@@ -74,8 +74,8 @@ impl AssembledProse {
     ///   1. `beats` 为空 -> `StoryError::Llm("prose generator returned no beats")`
     ///   2. beat 的 pov 非参与者,或 pov 无匹配 derivation -> 整 beat 拒绝,`rejected_beats`++
     ///   3. ref 不属于该 pov 的 derivation 候选集,或无法通过 Vocab 解析 -> 剥离,`stripped_refs`++
-    ///   4. 合法 ref 按固定 8 类顺序拼装:atmosphere -> visual -> auditory -> olfactory -> tactile -> gustatory -> emotion -> gesture
-    ///   5. 同类内保持 ref 出现顺序,beat 间保持叙事顺序
+    ///   4. 合法 ref 按 sensation_refs 出现顺序拼装(Hard 原句;镜头序由 beat 序列表达)
+    ///   5. beat 间保持叙事顺序(同类内 ref 出现顺序随 ref 序自然保留)
     ///   6. 被接受的 beat 若描写为空但 action 非空 -> `action_only_beats`++
     ///   7. action 经 [`Self::sanitize_action`] 后输出
     ///   8. 所有被接受的非空 beat 用单个 `\n` 连接
@@ -201,7 +201,6 @@ pub(crate) fn candidate_refs_for(derivation: &CharacterDerivation) -> HashSet<St
 
 /// Resolved quote candidate before source filter + rhythm join.
 struct ResolvedQuote {
-    sense: String,
     text: String,
     /// Book corpus tag when known (`hlm` / `zhz`); base vocab is `None`.
     source: Option<String>,
@@ -314,9 +313,10 @@ fn dominant_book_source(quotes: &[ResolvedQuote]) -> Option<String> {
         .find(|s| counts.get(s).copied().unwrap_or(0) == max)
 }
 
-/// 按类别有序拼装单 beat 的描写片段。
+/// 按 sensation_refs 出现顺序拼装单 beat 的描写片段。
 ///
 /// 返回 `(描写段, 剥离计数, 注入的原文列表)`。
+/// - 顺序：保持 refs 遇到顺序（镜头序），不按感官类别重排
 /// - 书源隔离：同 beat 内 hlm/zhz 冲突时只保留多数源（基座词无源，始终可留）
 /// - 节奏：quote 间按需插入 ，/。，避免短词裸贴
 fn assemble_beat_descriptions(
@@ -340,7 +340,6 @@ fn assemble_beat_descriptions(
             continue;
         };
         resolved.push(ResolvedQuote {
-            sense: vid.sense().to_string(),
             text: entry.text.clone(),
             source: book_source(vid.key(), &entry.tags),
         });
@@ -354,32 +353,10 @@ fn assemble_beat_descriptions(
         stripped += before - resolved.len();
     }
 
-    let order = [
-        "atmosphere",
-        "visual",
-        "auditory",
-        "olfactory",
-        "tactile",
-        "gustatory",
-        "emotion",
-        "gesture",
-    ];
-    let mut by_cat: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for q in &resolved {
-        by_cat
-            .entry(q.sense.clone())
-            .or_default()
-            .push(q.text.clone());
-    }
-    let mut parts: Vec<String> = Vec::new();
-    for cat in order {
-        if let Some(texts) = by_cat.get(cat) {
-            for t in texts {
-                parts.push(t.clone());
-            }
-        }
-    }
+    // Preserve ref input order (camera-beat order); do NOT sort by sense category.
+    // `resolved` is already in ref-encounter order, and the source-isolation
+    // `retain` above is stable, so relative order survives.
+    let parts: Vec<String> = resolved.iter().map(|q| q.text.clone()).collect();
     let quotes = parts.clone();
     let desc = join_quotes_with_rhythm(&parts);
     (desc, stripped, quotes)
@@ -503,7 +480,9 @@ gesture:
     }
 
     #[test]
-    fn orders_all_eight_categories() {
+    fn preserves_ref_input_order_all_categories() {
+        // Refs are deliberately given in REVERSE sense order to prove assemble
+        // preserves ref-input order rather than the old fixed 8-category order.
         let ids = [
             "gesture.weep",
             "emotion.sorrow",
@@ -527,12 +506,47 @@ gesture:
         )
         .unwrap();
 
-        // N3: 动作渲染为 "她进入房间"，不再是自由文本
+        // N3: quotes joined in ref-input order (gesture -> emotion -> ... -> atmosphere),
+        // 动作渲染为 "她进入房间"。All sample texts <=6 chars => comma separators.
         assert_eq!(
             prose.text,
-            "夜凉如水，血迹，脚步声，血腥味，冰凉的手，苦涩，心中未免悔恨，她伸手把帕子绞了又绞。她进入房间"
+            "她伸手把帕子绞了又绞，心中未免悔恨，苦涩，冰凉的手，血腥味，脚步声，血迹，夜凉如水。她进入房间"
         );
         assert_eq!(prose.stripped_refs, 0);
+    }
+
+    #[test]
+    fn assemble_preserves_ref_order_not_sense_order() {
+        // vocab: visual.bloodstain="血迹", atmosphere.coldnight="夜凉如水"
+        // beat refs: [visual.bloodstain, atmosphere.coldnight]  // visual before atmosphere
+        // OLD behavior: atmosphere first -> "夜凉如水…血迹"
+        // NEW: preserve ref order -> starts with "血迹"
+        let action = crate::models::StructuredAction {
+            kind: crate::models::ActionKind::LookAt,
+            target: Some("地面".into()),
+            dialogue: None,
+        };
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(
+                CHARACTER_A,
+                action,
+                &["visual.bloodstain", "atmosphere.coldnight"],
+            )]),
+            &sample_vocab(),
+            &[derivation(
+                CHARACTER_A,
+                &["visual.bloodstain", "atmosphere.coldnight"],
+            )],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        let pos_blood = prose.text.find("血迹").unwrap();
+        let pos_night = prose.text.find("夜凉如水").unwrap();
+        assert!(
+            pos_blood < pos_night,
+            "ref order must win over sense order: {}",
+            prose.text
+        );
     }
 
     #[test]
