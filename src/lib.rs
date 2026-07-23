@@ -8,6 +8,7 @@
 //   scene   →  业务编排（StoryService, 串联 LLM 推导与存储）
 
 pub mod api; // HTTP API 层：Axum 路由、DTO、输入校验和错误映射
+pub mod bootstrap; // 共享启动：Db + 词库 + 生成器 -> AppRuntime（CLI 与 main 复用）
 pub mod cli; // CLI 层：clap 参数树（子命令 + REPL 入口）
 pub mod db; // 数据库层：SQLite 连接管理 + 各实体的 Repository
 pub mod llm; // LLM 层：感官/记忆/情节推导的 trait 抽象与实现
