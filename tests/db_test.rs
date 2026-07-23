@@ -402,7 +402,9 @@ async fn replacement_derivation_leaves_one_state_set() {
     replace_for_test(&db, cid, sid, "second", "second clue", &["new".into()]).await;
 
     assert_eq!(
-        db.memories().list(cid, 50).await.unwrap()[0].content,
+        db.memories().list(cid, 50).await.unwrap()[0]
+            .content
+            .render(),
         "second"
     );
     assert_eq!(
@@ -422,7 +424,8 @@ async fn replacement_derivation_leaves_one_state_set() {
             .await
             .unwrap()[0]
             .development
-            .reason,
+            .reason
+            .render(),
         "second clue"
     );
     let tag_count: i64 = sqlx::query_scalar(
@@ -462,7 +465,9 @@ async fn replacement_rolls_back_without_erasing_prior_state() {
         .await;
     assert!(matches!(result, Err(StoryError::Database(_))));
     assert_eq!(
-        db.memories().list(cid, 50).await.unwrap()[0].content,
+        db.memories().list(cid, 50).await.unwrap()[0]
+            .content
+            .render(),
         "first"
     );
 }
@@ -537,6 +542,78 @@ async fn malformed_memory_certainty_json_returns_database_error() {
         db.memories().list(character_id, 1).await,
         Err(StoryError::Database(_))
     ));
+}
+
+#[tokio::test]
+async fn memory_content_slot_roundtrip_preserves_variant() {
+    let db = Db::open_in_memory().await.unwrap();
+    let cid = CharacterId(Uuid::new_v4());
+    let sid = SceneId(Uuid::new_v4());
+    db.characters().create(cid, "C", &[], &[]).await.unwrap();
+    db.scenes()
+        .create(sid, "event", &[cid], Utc::now())
+        .await
+        .unwrap();
+
+    let content = MemoryContentSlot::PhysicalDetail("袖口血迹".into());
+    db.derivations()
+        .insert_derivation(
+            cid,
+            sid,
+            &SensorySelection::default(),
+            &CharacterMemoryDraft {
+                content: content.clone(),
+                source: MemorySource::Witnessed,
+                certainty: Certainty::Certain,
+            },
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let mems = db.memories().list(cid, 10).await.unwrap();
+    assert_eq!(mems.len(), 1);
+    assert_eq!(mems[0].content, content);
+    assert_eq!(mems[0].content.render(), "物证：袖口血迹");
+}
+
+#[tokio::test]
+async fn legacy_plain_memory_content_reads_as_other() {
+    let db = Db::open_in_memory().await.unwrap();
+    let character_id = CharacterId(Uuid::new_v4());
+    let scene_id = SceneId(Uuid::new_v4());
+    db.characters()
+        .create(character_id, "C", &[], &[])
+        .await
+        .unwrap();
+    db.scenes()
+        .create(scene_id, "event", &[character_id], Utc::now())
+        .await
+        .unwrap();
+
+    // 模拟 N4 之前写入的明文 content（非 JSON 枚举）
+    query(
+        "INSERT INTO character_memories \
+         (id, character_id, scene_id, content, source, certainty, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(character_id.0.to_string())
+    .bind(scene_id.0.to_string())
+    .bind("旧版明文记忆内容")
+    .bind(serde_json::to_string(&MemorySource::Heard).unwrap())
+    .bind(serde_json::to_string(&Certainty::Suspected).unwrap())
+    .bind(Utc::now().to_rfc3339())
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let mems = db.memories().list(character_id, 1).await.unwrap();
+    assert_eq!(mems.len(), 1);
+    assert_eq!(
+        mems[0].content,
+        MemoryContentSlot::Other("旧版明文记忆内容".into())
+    );
 }
 
 #[tokio::test]

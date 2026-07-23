@@ -15,9 +15,11 @@ mod derivation_repo; // 推导结果写入（SensorySelection + CharacterMemory 
 mod memory_repo; // 角色记忆查询 & 插入
 mod plot_repo; // 剧情发展查询 & 事务内插入
 mod relationship_repo; // 关系事实/修订/候选持久化 & 时序查询
+mod row_util; // SQLite 行列解析工具
 mod scene_repo; // 场景 CRUD & 参与者关系
 mod schema; // DDL 定义 & 迁移
 mod sensation_repo; // 五感数据查询 & 插入
+mod state_repo; // N5 长线物理状态机 Repository
 
 pub use character_repo::CharacterRepo;
 pub use derivation_repo::DerivationRepo;
@@ -29,6 +31,7 @@ pub use relationship_repo::{
 pub use scene_repo::SceneRepo;
 pub use schema::migrate;
 pub use sensation_repo::SensationRepo;
+pub use state_repo::StateRepo;
 
 use crate::models::StoryError;
 use sqlx::sqlite::SqlitePool;
@@ -97,5 +100,8 @@ impl Db {
     }
     pub fn relationships(&self) -> RelationshipRepo {
         RelationshipRepo::new(self.pool.clone())
+    }
+    pub fn states(&self) -> StateRepo {
+        StateRepo::new(self.pool.clone())
     }
 }

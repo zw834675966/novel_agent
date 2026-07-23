@@ -47,6 +47,12 @@ CREATE TABLE IF NOT EXISTS scene_participants (
     FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
     FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS character_states (
+    character_id TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS character_memories (
     id TEXT PRIMARY KEY,
     character_id TEXT NOT NULL,

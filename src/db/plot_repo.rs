@@ -1,6 +1,5 @@
-use crate::models::{
-    CharacterId, PlotDevelopment, PlotDevelopmentKind, SceneId, StoredPlotDevelopment, StoryError,
-};
+use crate::db::row_util::{get_json, get_rfc3339, get_uuid};
+use crate::models::{CharacterId, PlotDevelopment, SceneId, StoredPlotDevelopment, StoryError};
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
@@ -53,23 +52,11 @@ impl PlotRepo {
 
         let mut out = Vec::new();
         for r in rows {
-            let id_str: String = sqlx::Row::try_get(&r, "id")?;
-            let character_id_str: String = sqlx::Row::try_get(&r, "character_id")?;
-            let scene_id_str: String = sqlx::Row::try_get(&r, "scene_id")?;
-            let kind_str: String = sqlx::Row::try_get(&r, "kind")?;
-            let reason: String = sqlx::Row::try_get(&r, "reason")?;
-            let created_at_str: String = sqlx::Row::try_get(&r, "created_at")?;
-
-            let id = Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?;
-            let cid = Uuid::parse_str(&character_id_str)
-                .map_err(|e| StoryError::Database(e.to_string()))?;
-            let sid =
-                Uuid::parse_str(&scene_id_str).map_err(|e| StoryError::Database(e.to_string()))?;
-            let kind: PlotDevelopmentKind =
-                serde_json::from_str(&kind_str).map_err(|e| StoryError::Database(e.to_string()))?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map_err(|e| StoryError::Database(e.to_string()))?
-                .with_timezone(&Utc);
+            let cid = get_uuid(&r, "character_id")?;
+            let sid = get_uuid(&r, "scene_id")?;
+            let kind = get_json(&r, "kind")?;
+            let reason = get_json(&r, "reason")?;
+            let created_at = get_rfc3339(&r, "created_at")?;
 
             out.push(StoredPlotDevelopment {
                 character_id: CharacterId(cid),
@@ -77,8 +64,6 @@ impl PlotRepo {
                 development: PlotDevelopment { kind, reason },
                 created_at,
             });
-            // id 目前未直接暴露在 StoredPlotDevelopment；保留解析以验证存储完整性。
-            let _ = id;
         }
         Ok(out)
     }
@@ -99,20 +84,10 @@ impl PlotRepo {
 
         let mut out = Vec::new();
         for r in rows {
-            let id_str: String = sqlx::Row::try_get(&r, "id")?;
-            let character_id_str: String = sqlx::Row::try_get(&r, "character_id")?;
-            let kind_str: String = sqlx::Row::try_get(&r, "kind")?;
-            let reason: String = sqlx::Row::try_get(&r, "reason")?;
-            let created_at_str: String = sqlx::Row::try_get(&r, "created_at")?;
-
-            let _id = Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?;
-            let cid = Uuid::parse_str(&character_id_str)
-                .map_err(|e| StoryError::Database(e.to_string()))?;
-            let kind: PlotDevelopmentKind =
-                serde_json::from_str(&kind_str).map_err(|e| StoryError::Database(e.to_string()))?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map_err(|e| StoryError::Database(e.to_string()))?
-                .with_timezone(&Utc);
+            let cid = get_uuid(&r, "character_id")?;
+            let kind = get_json(&r, "kind")?;
+            let reason = get_json(&r, "reason")?;
+            let created_at = get_rfc3339(&r, "created_at")?;
 
             out.push(StoredPlotDevelopment {
                 character_id: CharacterId(cid),
@@ -147,7 +122,10 @@ impl PlotRepo {
             serde_json::to_string(&development.kind)
                 .map_err(|e| StoryError::Database(e.to_string()))?,
         )
-        .bind(&development.reason)
+        .bind(
+            serde_json::to_string(&development.reason)
+                .map_err(|e| StoryError::Database(e.to_string()))?,
+        )
         .bind(now.to_rfc3339())
         .execute(&mut **tx)
         .await?;
