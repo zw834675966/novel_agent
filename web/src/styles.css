@@ -1,0 +1,406 @@
+:root {
+  --bg-main: #0b0f17;
+  --bg-card: rgba(18, 26, 41, 0.85);
+  --bg-card-hover: rgba(28, 40, 64, 0.95);
+  --border-color: rgba(255, 255, 255, 0.12);
+  --border-active: rgba(99, 102, 241, 0.5);
+  
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  
+  --accent-indigo: #6366f1;
+  --accent-indigo-hover: #4f46e5;
+  --accent-emerald: #10b981;
+  --accent-amber: #f59e0b;
+  --accent-rose: #f43f5e;
+  --accent-cyan: #06b6d4;
+
+  --shadow-lg: 0 10px 30px -10px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 20px rgba(99, 102, 241, 0.3);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+  --font-serif: "Georgia", "KaiTi", "STKaiti", serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-main);
+  background-image: 
+    radial-gradient(at 10% 10%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
+    radial-gradient(at 90% 90%, rgba(16, 185, 129, 0.1) 0px, transparent 50%);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* App Layout Header */
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 2rem;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.app-brand-logo {
+  width: 38px;
+  height: 38px;
+  background: linear-gradient(135deg, var(--accent-indigo), var(--accent-cyan));
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1.25rem;
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+}
+
+.app-title h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(to right, #ffffff, #cbd5e1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.app-title p {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* Navigation Tabs */
+.nav-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(11, 15, 23, 0.6);
+  padding: 0.25rem;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+}
+
+.nav-tab {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 0.45rem 0.95rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  box-shadow: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.nav-tab:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.nav-tab.active {
+  background: var(--accent-indigo);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+}
+
+.model-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.85rem;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 9999px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #a5b4fc;
+}
+
+.badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+  box-shadow: 0 0 8px var(--accent-emerald);
+}
+
+/* Workbench Shell */
+.workbench-shell {
+  display: grid;
+  grid-template-columns: 320px 1fr 340px;
+  gap: 1.25rem;
+  padding: 1.5rem 2rem;
+  max-width: 1680px;
+  margin: 0 auto;
+}
+
+/* Cards */
+.character-sidebar,
+.scene-editor,
+.derivation-inspector,
+.relationship-graph,
+.candidate-review,
+.timeline-container,
+.prompt-settings-panel,
+.prose-reader-card,
+.guide-card,
+.empty-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 1.25rem;
+  box-shadow: var(--shadow-lg);
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  white-space: nowrap;
+}
+
+.sidebar-header h2 {
+  font-size: 1.05rem;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.count-badge {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.search-box input {
+  width: 100%;
+  background: rgba(11, 15, 23, 0.6);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.6rem 0.85rem;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.character-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 580px;
+  overflow-y: auto;
+}
+
+.character-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.character-option:hover {
+  background: var(--bg-card-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.character-option.selected {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: var(--accent-indigo);
+}
+
+.character-name-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.character-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.state-tag.alive {
+  font-size: 0.65rem;
+  font-weight: 600;
+  background: rgba(16, 185, 129, 0.2);
+  color: var(--accent-emerald);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.character-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.tag-badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  color: var(--text-secondary);
+}
+
+.tag-badge.skill {
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+}
+
+/* Form Group & Inputs */
+.scene-editor-header h1 {
+  font-size: 1.35rem;
+  margin: 0 0 1.25rem 0;
+  color: var(--text-primary);
+}
+
+.scene-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-group label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+textarea#objective-event {
+  width: 100%;
+  background: rgba(11, 15, 23, 0.7);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  color: #f1f5f9;
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  min-height: 120px;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+textarea#objective-event:focus {
+  outline: none;
+  border-color: var(--accent-indigo);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+
+input[type="datetime-local"] {
+  width: 100%;
+  background: rgba(11, 15, 23, 0.7);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  color: #f1f5f9;
+  font-family: inherit;
+  font-size: 0.9rem;
+  color-scheme: dark;
+}
+
+.form-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.participant-count {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.participant-count strong {
+  color: var(--accent-cyan);
+}
+
+.btn-primary {
+  padding: 0.75rem 1.5rem;
+  background: linear-gradient(135deg, var(--accent-indigo), var(--accent-indigo-hover));
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+  transition: all 0.2s ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.5);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Guide & Empty Cards */
+.guide-card h3,
+.empty-card h3 {
+  font-size: 1rem;
+  margin: 0 0 0.75rem 0;
+  color: var(--accent-cyan);
+}
+
+.guide-card ol {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.8;
+}
+
+.empty-card p {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
