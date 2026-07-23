@@ -115,26 +115,23 @@ pub async fn bootstrap(opts: BootstrapOptions) -> anyhow::Result<AppRuntime> {
             Arc::new(RigProseGenerator::new(client)),
             false,
         ),
-        Err(_) => {
-            eprintln!("DEEPSEEK_API_KEY not set, using mock generators");
-            (
-                Arc::new(MockSenseGenerator::new(
-                    LlmContextTagSelection::default(),
-                    LlmCharacterDerivation {
-                        sensations: SensorySelection::default(),
-                        new_memory: CharacterMemoryDraft {
-                            content: "mock".into(),
-                            source: MemorySource::Witnessed,
-                            certainty: Certainty::Certain,
-                        },
-                        plot_development: vec![],
-                        relationship_candidates: vec![],
+        Err(_) => (
+            Arc::new(MockSenseGenerator::new(
+                LlmContextTagSelection::default(),
+                LlmCharacterDerivation {
+                    sensations: SensorySelection::default(),
+                    new_memory: CharacterMemoryDraft {
+                        content: "mock".into(),
+                        source: MemorySource::Witnessed,
+                        certainty: Certainty::Certain,
                     },
-                )),
-                Arc::new(MockProseGenerator::fallback()),
-                true,
-            )
-        }
+                    plot_development: vec![],
+                    relationship_candidates: vec![],
+                },
+            )),
+            Arc::new(MockProseGenerator::fallback()),
+            true,
+        ),
     };
 
     // 5. StoryService.

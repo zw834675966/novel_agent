@@ -1,98 +1,55 @@
 // novels 应用入口
 // ==================
-// 启动流程：
-//   1. 从环境变量加载 DEEPSEEK_API_KEY
-//   2. 初始化 SQLite 数据库（novels.db）
-//   3. 加载感官词库（assets/vocab.yaml）
-//   4. 初始化 LLM 生成器（无 API Key 时降级为 Mock）
-//   5. 创建 StoryService
-//   6. 创建角色 + 场景 + 推导 + 叙事编排演示
+// 三种运行模式：
+//   1. 裸 `cargo run`（无子命令）-> 演示流程 + API :3000（legacy 模式）
+//   2. `cargo run -- repl` -> 交互式 REPL
+//   3. `cargo run -- <command>` -> 单次命令执行
 
-use novels::db::Db;
-use novels::llm::{
-    LlmCharacterDerivation, LlmContextTagSelection, MockSenseGenerator, RigSenseGenerator,
-    SenseGenerator,
-};
+use std::path::PathBuf;
+
+use clap::Parser;
+use novels::bootstrap::{self, BootstrapOptions};
+use novels::cli::Cli;
 use novels::models::*;
-use novels::prose::{MockProseGenerator, ProseGenerator, RigProseGenerator};
-use novels::scene::StoryService;
-use rig::client::ProviderClient;
-use rig::providers::deepseek;
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 加载 .env 文件（如果存在）
-    // 可以在此文件中设置 DEEPSEEK_API_KEY 等环境变量
     dotenv::dotenv().ok();
 
-    // 初始化底层依赖
-    let db = Db::open("novels.db").await?;
+    let cli = Cli::parse();
 
-    // 词库：base (assets/vocab.yaml) + 可选 distilled 目录合并
-    // - 默认：若 assets/distilled 存在则合并
-    // - NOVELS_DISTILLED_DIR=<path>：覆盖默认 distilled 目录（须为目录）
-    // - NOVELS_SKIP_DISTILLED=1：仅加载 base，跳过 distilled
-    let skip_distilled = std::env::var("NOVELS_SKIP_DISTILLED")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let distilled = if skip_distilled {
-        None
-    } else {
-        std::env::var("NOVELS_DISTILLED_DIR")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(std::path::PathBuf::from)
-            .filter(|p| p.is_dir())
-            .or_else(|| {
-                let p = std::path::PathBuf::from("assets/distilled");
-                p.is_dir().then_some(p)
-            })
-    };
-    let (vocab, report) = novels::vocab::load_runtime_vocab(
-        std::path::Path::new("assets/vocab.yaml"),
-        distilled.as_deref(),
-    )?;
-    eprintln!(
-        "vocab loaded: base={} distilled_files={} total={}",
-        report.base_entries, report.distilled_files, report.total_entries
-    );
-
-    // 初始化 LLM 生成器
-    // rig::providers::deepseek::Client::from_env() 从 DEEPSEEK_API_KEY 环境变量创建客户端
-    // 如果环境变量未设置，使用 Mock 生成器（返回固定数据，不调用外部 API）
-    //
-    // 单次 from_env() 调用同时构造 sense + prose 两套适配器；
-    // 失败分支同时降级为两套 Mock，保证不会出现"只配了一个生产适配器"的半成品状态。
-    let (sense_generator, prose_generator): (Arc<dyn SenseGenerator>, Arc<dyn ProseGenerator>) =
-        match deepseek::Client::from_env() {
-            Ok(client) => (
-                Arc::new(RigSenseGenerator::new(client.clone(), vocab.clone())),
-                Arc::new(RigProseGenerator::new(client)),
-            ),
-            Err(_) => {
+    match &cli.command {
+        None => {
+            // Legacy: 演示 + API
+            let db_path = cli.db.clone().unwrap_or_else(|| PathBuf::from("novels.db"));
+            let rt = bootstrap::bootstrap(BootstrapOptions { db_path }).await?;
+            eprintln!("{}", rt.vocab_report_line);
+            if rt.using_mock {
                 eprintln!("DEEPSEEK_API_KEY not set, using mock generators");
-                (
-                    Arc::new(MockSenseGenerator::new(
-                        LlmContextTagSelection::default(),
-                        LlmCharacterDerivation {
-                            sensations: SensorySelection::default(),
-                            new_memory: CharacterMemoryDraft {
-                                content: "mock".into(),
-                                source: MemorySource::Witnessed,
-                                certainty: Certainty::Certain,
-                            },
-                            plot_development: vec![],
-                            relationship_candidates: vec![],
-                        },
-                    )),
-                    Arc::new(MockProseGenerator::fallback()),
-                )
             }
-        };
+            run_legacy(rt).await
+        }
+        Some(_) => {
+            let code = novels::cli::run_cli(cli).await?;
+            std::process::exit(code);
+        }
+    }
+}
 
-    // 创建故事服务
-    let svc = StoryService::new(db, vocab, sense_generator, prose_generator);
+/// Legacy 演示流程 + API 服务。
+async fn run_legacy(rt: novels::bootstrap::AppRuntime) -> anyhow::Result<()> {
+    let svc = rt.service;
+
+    // 绑定端口并启动 API Web 服务
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+    println!("API listening on http://127.0.0.1:3000");
+
+    let server_svc = svc.clone();
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, novels::api::app(server_svc)).await {
+            eprintln!("Web server error: {e}");
+        }
+    });
 
     // ---- 演示流程 ----
     // 1. 创建一个角色
@@ -122,7 +79,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 4. 把结构化推导编排成小说正文
-    //    LLM 只写叙事骨架,描写从红楼梦/甄嬛传素材库拉取原著片段
     match svc.narrate_scene(sid, &derivations).await {
         Ok(prose) => {
             println!(
@@ -142,5 +98,7 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => eprintln!("narrate err: {e}"),
     }
 
+    // 保持主线程持续运行以维持 Web 服务
+    futures::future::pending::<()>().await;
     Ok(())
 }
