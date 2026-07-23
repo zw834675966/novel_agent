@@ -1,9 +1,9 @@
 // CLI 命令执行器
 // ==============
-// 把 `Commands` 枚举分发到具体的业务逻辑，返回结构化 `Observation`。
+// 把 `Commands` 枚举分发到具体的业务逻辑，返回 `CommandOutput`（观测 + 可选正文）。
 //
-// Task 5 实现所有非 LLM 命令（character/scene/use/context）；
-// LLM 命令（derive/narrate/show derivation/show prose）留桩，Task 6 接入。
+// 非 LLM 命令（character/scene/use/context）直接操作 DB；
+// LLM 命令（derive/narrate）通过 StoryService 调用，show 展示持久化结果。
 
 use std::collections::BTreeMap;
 
@@ -11,10 +11,12 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::cli::args::{CharacterCmd, Commands, SceneCmd, ShowCmd, UseCmd};
-use crate::cli::observation::{Observation, Status};
+use crate::cli::observation::{Observation, Status, quality_from_prose};
 use crate::cli::prose_cache::ProseCache;
 use crate::cli::session::{Session, resolve_character, resolve_scene};
-use crate::models::{CharacterId, CreateScene};
+use crate::models::{
+    CharacterDerivation, CharacterId, CreateScene, SceneDerivationDetail, SceneId,
+};
 use crate::scene::StoryService;
 
 /// 命令执行上下文：把 service + 会话状态 + 缓存 + 模式标志打包给 execute。
@@ -27,20 +29,28 @@ pub struct CommandContext<'a> {
     pub one_shot: bool,
 }
 
-/// 分发命令并返回观测结果。
-pub async fn execute(cmd: Commands, ctx: &mut CommandContext<'_>) -> Observation {
+/// 命令输出：结构化观测 + 可选正文（narrate / show prose）。
+#[derive(Debug, Clone)]
+pub struct CommandOutput {
+    pub observation: Observation,
+    pub body: Option<String>,
+}
+
+/// 分发命令并返回命令输出。
+pub async fn execute(cmd: Commands, ctx: &mut CommandContext<'_>) -> CommandOutput {
     match cmd {
-        Commands::Character(c) => execute_character(c, ctx).await,
-        Commands::Scene(s) => execute_scene(s, ctx).await,
-        Commands::Use(u) => execute_use(u, ctx).await,
-        Commands::Context => execute_context(ctx),
-        // LLM 命令留桩（Task 6 接入）
-        Commands::Derive { .. }
-        | Commands::Narrate { .. }
-        | Commands::Show(ShowCmd::Derivation { .. })
-        | Commands::Show(ShowCmd::Prose { .. }) => err_observation("此命令尚未接入".into()),
+        Commands::Character(c) => wrap(execute_character(c, ctx).await),
+        Commands::Scene(s) => wrap(execute_scene(s, ctx).await),
+        Commands::Use(u) => wrap(execute_use(u, ctx).await),
+        Commands::Context => wrap(execute_context(ctx)),
+        Commands::Derive { scene, character } => execute_derive(scene, character, ctx).await,
+        Commands::Narrate { scene } => execute_narrate(scene, ctx).await,
+        Commands::Show(ShowCmd::Derivation { scene, character }) => {
+            execute_show_derivation(scene, character, ctx).await
+        }
+        Commands::Show(ShowCmd::Prose { scene }) => execute_show_prose(scene, ctx).await,
         // REPL 循环仅在交互模式可用（Task 7）
-        Commands::Repl => err_observation("REPL 仅在交互模式可用".into()),
+        Commands::Repl => wrap(err_observation("REPL 仅在交互模式可用".into())),
     }
 }
 
@@ -105,6 +115,9 @@ async fn execute_scene(cmd: SceneCmd, ctx: &mut CommandContext<'_>) -> Observati
     match cmd {
         SceneCmd::Create { event, with } => {
             let tokens = split_csv(&with);
+            if tokens.is_empty() {
+                return err_observation("场景至少需要一名参与者".into());
+            }
             let mut participant_ids = Vec::new();
             for token in &tokens {
                 match resolve_character(ctx.service.db(), token).await {
@@ -214,6 +227,269 @@ fn execute_context(ctx: &mut CommandContext<'_>) -> Observation {
     success_observation(summary, artifacts)
 }
 
+// ---- Derive 命令 ----
+
+async fn execute_derive(
+    scene: Option<String>,
+    character: Option<String>,
+    ctx: &mut CommandContext<'_>,
+) -> CommandOutput {
+    // 1. 解析场景：flag > session
+    let scene_id = match resolve_scene_for_cmd(scene.as_deref(), ctx).await {
+        Ok(id) => id,
+        Err(o) => return wrap(o),
+    };
+
+    // 2. 解析角色：flag > session
+    let char_id = if let Some(name) = &character {
+        match resolve_character(ctx.service.db(), name).await {
+            Ok(id) => Some(id),
+            Err(e) => return wrap(err_observation(e.summary())),
+        }
+    } else {
+        ctx.session.current_character
+    };
+
+    // 3. 执行推导
+    let status = if ctx.using_mock {
+        Status::Warning
+    } else {
+        Status::Success
+    };
+
+    if let Some(cid) = char_id {
+        // 单角色推导
+        match ctx.service.derive_character(scene_id, cid).await {
+            Ok(_) => {
+                let summary = if ctx.using_mock {
+                    "推导完成（非生产质量）".to_string()
+                } else {
+                    "推导完成".to_string()
+                };
+                let mut artifacts = BTreeMap::new();
+                artifacts.insert("scene_id".into(), scene_id.0.to_string());
+                artifacts.insert("character_id".into(), cid.0.to_string());
+                wrap(Observation {
+                    status,
+                    summary,
+                    artifacts,
+                    quality: None,
+                    next: vec![],
+                })
+            }
+            Err(e) => wrap(err_observation(e.to_string())),
+        }
+    } else {
+        // 全场景推导
+        let results = ctx.service.derive_scene(scene_id).await;
+        let ok_count = results.iter().filter(|r| r.is_ok()).count();
+        let err_count = results.len() - ok_count;
+
+        let summary = if err_count > 0 {
+            format!("推导完成：{ok_count} 成功，{err_count} 失败")
+        } else if ctx.using_mock {
+            format!("推导完成：{ok_count} 个角色（非生产质量）")
+        } else {
+            format!("推导完成：{ok_count} 个角色")
+        };
+
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert("scene_id".into(), scene_id.0.to_string());
+        artifacts.insert("ok_count".into(), ok_count.to_string());
+        artifacts.insert("err_count".into(), err_count.to_string());
+
+        let final_status = if err_count > 0 && ok_count == 0 {
+            Status::Error
+        } else {
+            status
+        };
+
+        wrap(Observation {
+            status: final_status,
+            summary,
+            artifacts,
+            quality: None,
+            next: if ok_count > 0 {
+                vec!["narrate".into()]
+            } else {
+                vec![]
+            },
+        })
+    }
+}
+
+// ---- Narrate 命令 ----
+
+async fn execute_narrate(scene: Option<String>, ctx: &mut CommandContext<'_>) -> CommandOutput {
+    // 1. 解析场景
+    let scene_id = match resolve_scene_for_cmd(scene.as_deref(), ctx).await {
+        Ok(id) => id,
+        Err(o) => return wrap(o),
+    };
+
+    // 2. 从 DB 加载推导详情
+    let details = match ctx.service.scene_derivations(scene_id).await {
+        Ok(d) => d,
+        Err(e) => return wrap(err_observation(e.to_string())),
+    };
+
+    // 3. 预检：无推导 -> 提示先 derive
+    if details.is_empty() {
+        return wrap(Observation {
+            status: Status::Error,
+            summary: "该场景尚无推导记录".into(),
+            artifacts: BTreeMap::new(),
+            quality: None,
+            next: vec!["derive".into()],
+        });
+    }
+
+    // 4. 映射 SceneDerivationDetail -> CharacterDerivation
+    let derivations: Vec<CharacterDerivation> = details
+        .iter()
+        .map(|d| detail_to_derivation(d, scene_id))
+        .collect();
+
+    // 5. 调用 narrate
+    match ctx.service.narrate_scene(scene_id, &derivations).await {
+        Ok(prose) => {
+            // 缓存
+            ctx.prose_cache.scene_id = Some(scene_id);
+            ctx.prose_cache.prose = Some(prose.clone());
+
+            let status = if ctx.using_mock {
+                Status::Warning
+            } else {
+                Status::Success
+            };
+
+            CommandOutput {
+                observation: Observation {
+                    status,
+                    summary: if ctx.using_mock {
+                        "正文已生成（非生产质量）".into()
+                    } else {
+                        "正文已生成".into()
+                    },
+                    artifacts: BTreeMap::new(),
+                    quality: Some(quality_from_prose(&prose)),
+                    next: vec![],
+                },
+                body: Some(prose.text.clone()),
+            }
+        }
+        Err(e) => wrap(err_observation(e.to_string())),
+    }
+}
+
+// ---- Show Derivation 命令 ----
+
+async fn execute_show_derivation(
+    scene: Option<String>,
+    character: Option<String>,
+    ctx: &mut CommandContext<'_>,
+) -> CommandOutput {
+    let scene_id = match resolve_scene_for_cmd(scene.as_deref(), ctx).await {
+        Ok(id) => id,
+        Err(o) => return wrap(o),
+    };
+
+    let details = match ctx.service.scene_derivations(scene_id).await {
+        Ok(d) => d,
+        Err(e) => return wrap(err_observation(e.to_string())),
+    };
+
+    if details.is_empty() {
+        return wrap(Observation {
+            status: Status::Error,
+            summary: "该场景尚无推导记录".into(),
+            artifacts: BTreeMap::new(),
+            quality: None,
+            next: vec!["derive".into()],
+        });
+    }
+
+    // 可选过滤到单个角色
+    let filtered: Vec<&SceneDerivationDetail> = if let Some(name) = &character {
+        match resolve_character(ctx.service.db(), name).await {
+            Ok(cid) => details.iter().filter(|d| d.character.id == cid).collect(),
+            Err(e) => return wrap(err_observation(e.summary())),
+        }
+    } else {
+        details.iter().collect()
+    };
+
+    let mut lines = Vec::new();
+    for d in &filtered {
+        let mem_preview = d.memory.content.render();
+        let mem_preview = if mem_preview.chars().count() > 40 {
+            let mut p: String = mem_preview.chars().take(40).collect();
+            p.push('…');
+            p
+        } else {
+            mem_preview
+        };
+        lines.push(format!(
+            "  {}：记忆「{}」、剧情 {} 条、关系候选 {} 条",
+            d.character.name,
+            mem_preview,
+            d.plot_developments.len(),
+            d.relationship_candidates.len()
+        ));
+    }
+
+    let mut artifacts = BTreeMap::new();
+    artifacts.insert("scene_id".into(), scene_id.0.to_string());
+    artifacts.insert("derivation_count".into(), filtered.len().to_string());
+    artifacts.insert("details".into(), lines.join("\n"));
+
+    wrap(success_observation(
+        format!("场景有 {} 个角色推导", filtered.len()),
+        artifacts,
+    ))
+}
+
+// ---- Show Prose 命令 ----
+
+async fn execute_show_prose(scene: Option<String>, ctx: &mut CommandContext<'_>) -> CommandOutput {
+    // 如果有缓存且场景匹配，直接返回
+    if let Some(prose) = &ctx.prose_cache.prose {
+        let scene_matches = match (&ctx.prose_cache.scene_id, &scene) {
+            (Some(cache_sid), Some(flag)) => match resolve_scene(ctx.service.db(), flag).await {
+                Ok(sid) => *cache_sid == sid,
+                Err(e) => return wrap(err_observation(e.summary())),
+            },
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if scene_matches {
+            return CommandOutput {
+                observation: success_observation("正文缓存".into(), BTreeMap::new()),
+                body: Some(prose.text.clone()),
+            };
+        }
+    }
+
+    // 无缓存：区分 one-shot vs REPL
+    if ctx.one_shot {
+        wrap(Observation {
+            status: Status::Error,
+            summary: "正文仅在 REPL 进程内缓存；单次命令模式下请使用 novels narrate --scene <id> 直接输出正文。".into(),
+            artifacts: BTreeMap::new(),
+            quality: None,
+            next: vec!["novels narrate --scene <id>".into()],
+        })
+    } else {
+        wrap(Observation {
+            status: Status::Error,
+            summary: "当前进程尚无 narrate 缓存。请先执行 narrate。".into(),
+            artifacts: BTreeMap::new(),
+            quality: None,
+            next: vec!["narrate".into()],
+        })
+    }
+}
+
 // ---- 辅助函数 ----
 
 /// 逗号分隔 -> 逐项 trim -> 丢弃空串。
@@ -222,6 +498,44 @@ fn split_csv(s: &str) -> Vec<String> {
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty())
         .collect()
+}
+
+/// 把 SceneDerivationDetail 映射为 CharacterDerivation（只读，不调 LLM）。
+fn detail_to_derivation(detail: &SceneDerivationDetail, scene_id: SceneId) -> CharacterDerivation {
+    CharacterDerivation {
+        character_id: detail.character.id,
+        scene_id,
+        sensations: detail.sensation.clone(),
+        new_memory: detail.memory.clone(),
+        plot_development: detail
+            .plot_developments
+            .iter()
+            .map(|p| p.development.clone())
+            .collect(),
+        relationship_candidates: detail.relationship_candidates.clone(),
+    }
+}
+
+/// 解析场景：flag > session.current_scene；都没有则返回 pre-gate 错误。
+async fn resolve_scene_for_cmd(
+    flag: Option<&str>,
+    ctx: &mut CommandContext<'_>,
+) -> Result<SceneId, Observation> {
+    if let Some(s) = flag {
+        resolve_scene(ctx.service.db(), s)
+            .await
+            .map_err(|e| err_observation(e.summary()))
+    } else if let Some(id) = ctx.session.current_scene {
+        Ok(id)
+    } else {
+        Err(Observation {
+            status: Status::Error,
+            summary: "未指定场景".into(),
+            artifacts: BTreeMap::new(),
+            quality: None,
+            next: vec!["use scene <id>".into(), "derive --scene <id>".into()],
+        })
+    }
 }
 
 /// 构造成功观测。
@@ -243,6 +557,14 @@ fn err_observation(summary: String) -> Observation {
         artifacts: BTreeMap::new(),
         quality: None,
         next: vec![],
+    }
+}
+
+/// 把 Observation 包成无正文的 CommandOutput。
+fn wrap(observation: Observation) -> CommandOutput {
+    CommandOutput {
+        observation,
+        body: None,
     }
 }
 
