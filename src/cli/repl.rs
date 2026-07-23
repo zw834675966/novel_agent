@@ -26,13 +26,13 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<i32> {
     let rt = bootstrap::bootstrap(BootstrapOptions { db_path }).await?;
     eprintln!("{}", rt.vocab_report_line);
 
-    if rt.using_mock {
-        println!(
-            "status: warning\nsummary: DEEPSEEK_API_KEY 未设置，使用 Mock 生成器（非生产质量）\n"
-        );
-    }
-
     let json = cli.json;
+
+    if rt.using_mock {
+        // Mock 警告走 stderr，保持 stdout 在 --json 模式下纯净
+        eprintln!("status: warning");
+        eprintln!("summary: DEEPSEEK_API_KEY 未设置，使用 Mock 生成器（非生产质量）");
+    }
 
     match cli.command {
         Some(Commands::Repl) => run_repl(rt, json).await,
@@ -105,9 +105,7 @@ async fn run_repl(rt: AppRuntime, json: bool) -> anyhow::Result<i32> {
         }
 
         let args = split_repl_line(trimmed);
-        let argv: Vec<String> = std::iter::once("novels".to_string())
-            .chain(args)
-            .collect();
+        let argv: Vec<String> = std::iter::once("novels".to_string()).chain(args).collect();
 
         let parsed_cli = match Cli::try_parse_from(argv) {
             Ok(c) => c,
@@ -147,12 +145,27 @@ async fn run_repl(rt: AppRuntime, json: bool) -> anyhow::Result<i32> {
 }
 
 /// 打印命令输出：observation（render）+ 可选正文。
+///
+/// 在 JSON 模式下，正文作为 `body` 字段附加到 JSON 对象后输出。
+/// 在人类可读模式下，正文直接打印在 observation 之后。
 fn print_output(output: &CommandOutput, json: bool) {
-    print!("{}", output.observation.render(json));
-    if let Some(body) = &output.body {
-        println!("{body}");
+    if json {
+        // JSON 模式：把 body 合并到 observation 的 JSON 中
+        let mut json_str = output.observation.render(true);
+        if let Some(body) = &output.body {
+            // 在 JSON 对象的闭合 `}` 前插入 "body" 字段
+            let body_json = serde_json::to_string(body).unwrap_or_else(|_| "\"\"".into());
+            if let Some(pos) = json_str.rfind('}') {
+                json_str.insert_str(pos, &format!(",\"body\":{body_json}"));
+            }
+        }
+        println!("{json_str}");
+    } else {
+        print!("{}", output.observation.render(false));
+        if let Some(body) = &output.body {
+            println!("{body}");
+        }
     }
-    // 确保输出刷新
     let _ = io::stdout().flush();
 }
 

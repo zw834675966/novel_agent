@@ -328,8 +328,19 @@ async fn execute_narrate(scene: Option<String>, ctx: &mut CommandContext<'_>) ->
     };
 
     // 2. 从 DB 加载推导详情
+    //    scene_derivations 要求所有参与者都有推导记录；
+    //    若部分角色未推导，会返回 CharacterNotFound -> 映射为「请先 derive」提示。
     let details = match ctx.service.scene_derivations(scene_id).await {
         Ok(d) => d,
+        Err(StoryError::CharacterNotFound(_)) => {
+            return wrap(Observation {
+                status: Status::Error,
+                summary: "该场景尚无完整推导记录（部分角色未推导）".into(),
+                artifacts: BTreeMap::new(),
+                quality: None,
+                next: vec!["derive".into()],
+            });
+        }
         Err(e) => return wrap(err_from_story(e)),
     };
 
