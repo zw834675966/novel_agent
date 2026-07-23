@@ -11,7 +11,7 @@ use novels::llm::{
     MockSenseGenerator, SenseGenerator,
 };
 use novels::models::*;
-use novels::prose::MockProseGenerator;
+use novels::prose::{MockProseGenerator, MockScenePlanner};
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
 use std::collections::VecDeque;
@@ -161,6 +161,7 @@ async fn derive_character_persists_and_returns() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
 
     let cid = CharacterId(uuid::Uuid::new_v4());
@@ -197,6 +198,7 @@ async fn derive_character_rejects_non_participant() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
@@ -226,6 +228,7 @@ async fn derive_scene_returns_partial_on_one_failure() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let s = SceneId(uuid::Uuid::new_v4());
     db.characters().create(c1, "A", &[], &[]).await.unwrap();
@@ -290,6 +293,7 @@ async fn retry_persists_complete_second_response() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
@@ -338,6 +342,7 @@ async fn retry_rejects_two_invalid_responses_without_persisting() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
@@ -385,6 +390,7 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
         vocab,
         generator.clone(),
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
 
     let cid = CharacterId(uuid::Uuid::new_v4());
@@ -466,6 +472,7 @@ async fn narrative_service_fixture(
         vocab,
         generator.clone(),
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let cid = CharacterId(uuid::Uuid::new_v4());
     db.characters().create(cid, "A", &[], &[]).await.unwrap();

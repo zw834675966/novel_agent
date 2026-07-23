@@ -21,7 +21,10 @@ use crate::llm::{
     SenseGenerator,
 };
 use crate::models::{Certainty, CharacterMemoryDraft, MemorySource, SensorySelection};
-use crate::prose::{MockProseGenerator, ProseGenerator, RigProseGenerator};
+use crate::prose::{
+    MockProseGenerator, MockScenePlanner, ProseGenerator, RigProseGenerator, RigScenePlanner,
+    ScenePlanner,
+};
 use crate::scene::StoryService;
 use crate::vocab::load_runtime_vocab;
 
@@ -34,7 +37,7 @@ pub struct AppRuntime {
     /// The assembled story service, ready for derivation / narration.
     pub service: StoryService,
     /// `true` when the DeepSeek client could not be built from the environment
-    /// and the mock sense + prose generators were used instead.
+    /// and the mock sense + prose + planner generators were used instead.
     pub using_mock: bool,
     /// The single-line vocab load summary (`"vocab loaded: base=... ..."`)
     /// that `main` historically printed to stderr. [`bootstrap`] returns it
@@ -56,8 +59,9 @@ pub struct BootstrapOptions {
 /// 2. Resolve the optional distilled-vocab directory from
 ///    `NOVELS_SKIP_DISTILLED` / `NOVELS_DISTILLED_DIR`.
 /// 3. Load the base vocab (`assets/vocab.yaml`) plus any distilled merge.
-/// 4. Build the DeepSeek-backed sense + prose generators, or fall back to the
-///    mock pair when the client cannot be constructed from the environment.
+/// 4. Build the DeepSeek-backed sense + prose + scene-planner adapters, or fall
+///    back to the mock triple when the client cannot be constructed from the
+///    environment.
 /// 5. Assemble the [`StoryService`].
 ///
 /// The caller should call `dotenv::dotenv()` beforehand if `.env` loading is
@@ -102,18 +106,20 @@ pub async fn bootstrap(opts: BootstrapOptions) -> anyhow::Result<AppRuntime> {
         report.base_entries, report.distilled_files, report.total_entries
     );
 
-    // 4. Generators. A single from_env() call builds both sense + prose
-    //    adapters; on failure both degrade to mocks so we never ship a
+    // 4. Generators. A single from_env() call builds sense + prose + planner
+    //    adapters; on failure all degrade to mocks so we never ship a
     //    half-configured (one real + one mock) state.
-    let (sense_generator, prose_generator, using_mock): (
+    let deepseek_client = deepseek::Client::from_env();
+    let using_mock = deepseek_client.is_err();
+    let (sense_generator, prose_generator, scene_planner): (
         Arc<dyn SenseGenerator>,
         Arc<dyn ProseGenerator>,
-        bool,
-    ) = match deepseek::Client::from_env() {
+        Arc<dyn ScenePlanner>,
+    ) = match deepseek_client {
         Ok(client) => (
             Arc::new(RigSenseGenerator::new(client.clone(), vocab.clone())),
-            Arc::new(RigProseGenerator::new(client)),
-            false,
+            Arc::new(RigProseGenerator::new(client.clone())),
+            Arc::new(RigScenePlanner::new(client)),
         ),
         Err(_) => (
             Arc::new(MockSenseGenerator::new(
@@ -130,12 +136,12 @@ pub async fn bootstrap(opts: BootstrapOptions) -> anyhow::Result<AppRuntime> {
                 },
             )),
             Arc::new(MockProseGenerator::fallback()),
-            true,
+            Arc::new(MockScenePlanner::fallback()),
         ),
     };
 
     // 5. StoryService.
-    let service = StoryService::new(db, vocab, sense_generator, prose_generator);
+    let service = StoryService::new(db, vocab, sense_generator, prose_generator, scene_planner);
 
     Ok(AppRuntime {
         service,

@@ -9,8 +9,8 @@ use crate::models::{
     SceneId, StoryError,
 };
 use crate::prose::{
-    AssembledProse, CharacterProseCandidates, LlmScenePlan, NarrateRequest, ProseCandidate,
-    ProseGenerator,
+    AssembledProse, CharacterProseCandidates, NarrateRequest, PlanRequest, ProseCandidate,
+    ProseGenerator, ScenePlanner,
 };
 use crate::text_guard::{MAX_MEMORY_CHARS, MAX_PLOT_REASON_CHARS, sanitize_free_text};
 use crate::vocab::Vocab;
@@ -39,6 +39,7 @@ pub struct StoryService {
     vocab: Vocab,                             // 感官词库（候选集校验 + 叙事拼装）
     sense_generator: Arc<dyn SenseGenerator>, // 感官/记忆 LLM 推导引擎
     prose_generator: Arc<dyn ProseGenerator>, // 叙事编排 LLM 引擎
+    scene_planner: Arc<dyn ScenePlanner>,     // 场景编导规划器（大纲+镜头表）
 }
 
 impl StoryService {
@@ -47,12 +48,14 @@ impl StoryService {
         vocab: Vocab,
         sense_generator: Arc<dyn SenseGenerator>,
         prose_generator: Arc<dyn ProseGenerator>,
+        scene_planner: Arc<dyn ScenePlanner>,
     ) -> Self {
         Self {
             db,
             vocab,
             sense_generator,
             prose_generator,
+            scene_planner,
         }
     }
 
@@ -423,15 +426,32 @@ impl StoryService {
             }
         }
 
-        // 6. 构造语义请求并调用 LLM
-        //    plan 为占位：Task 5 替换为真实 ScenePlanner::plan_scene() 输出。
-        let plan = LlmScenePlan::minimal(
-            &scene.objective_event,
-            &characters
-                .iter()
-                .map(|c| c.name.as_str())
-                .collect::<Vec<_>>(),
-        );
+        // 6. 调用 ScenePlanner 生成编导大纲+镜头表
+        let plan = self
+            .scene_planner
+            .plan_scene(&PlanRequest {
+                scene: scene.clone(),
+                characters: characters.clone(),
+            })
+            .await?;
+
+        // 验证计划：camera_beats 非空；每个 pov_name 匹配某个角色名
+        if plan.scene_card.camera_beats.is_empty() {
+            return Err(StoryError::Llm(
+                "scene planner returned no camera beats".into(),
+            ));
+        }
+        let valid_names: HashSet<&str> = characters.iter().map(|c| c.name.as_str()).collect();
+        for beat in &plan.scene_card.camera_beats {
+            if !valid_names.contains(beat.pov_name.as_str()) {
+                return Err(StoryError::Llm(format!(
+                    "camera beat pov_name '{}' not found among scene participants",
+                    beat.pov_name
+                )));
+            }
+        }
+
+        // 7. 构造语义请求并调用 LLM
         let req = NarrateRequest {
             scene: scene.clone(),
             characters,
@@ -441,7 +461,7 @@ impl StoryService {
         };
         let narrative = self.prose_generator.narrate(&req).await?;
 
-        // 7. 拼装正文 + ref 校验
+        // 8. 拼装正文 + ref 校验
         let participants: HashSet<String> = scene
             .participant_ids
             .iter()

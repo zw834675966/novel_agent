@@ -10,7 +10,7 @@ use novels::cli::{
 use novels::db::Db;
 use novels::llm::{LlmCharacterDerivation, LlmContextTagSelection, MockSenseGenerator};
 use novels::models::*;
-use novels::prose::MockProseGenerator;
+use novels::prose::{MockProseGenerator, MockScenePlanner};
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
 use std::sync::Arc;
@@ -38,7 +38,13 @@ async fn make_service() -> StoryService {
         canned,
     ));
     let prose_gen = Arc::new(MockProseGenerator::fallback());
-    StoryService::new(db, vocab, sense_gen, prose_gen)
+    StoryService::new(
+        db,
+        vocab,
+        sense_gen,
+        prose_gen,
+        Arc::new(MockScenePlanner::fallback()),
+    )
 }
 
 /// 构造一个默认的 CommandContext（mock 模式，非 json，one-shot）。

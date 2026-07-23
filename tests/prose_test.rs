@@ -70,7 +70,13 @@ async fn service_fixture(prose: Arc<dyn ProseGenerator>) -> StoryService {
             relationship_candidates: vec![],
         },
     ));
-    StoryService::new(db, sample_vocab(), sense, prose)
+    StoryService::new(
+        db,
+        sample_vocab(),
+        sense,
+        prose,
+        Arc::new(MockScenePlanner::fallback()),
+    )
 }
 
 fn derivation_for(scene_id: SceneId, character_id: CharacterId) -> CharacterDerivation {
@@ -306,7 +312,13 @@ emotion:
         },
     ));
     let db = Db::open_in_memory().await.unwrap();
-    let service = StoryService::new(db, vocab, sense, prose_gen);
+    let service = StoryService::new(
+        db,
+        vocab,
+        sense,
+        prose_gen,
+        Arc::new(MockScenePlanner::fallback()),
+    );
 
     service
         .db()

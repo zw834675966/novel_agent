@@ -9,7 +9,7 @@
 use novels::db::Db;
 use novels::llm::{LlmCharacterDerivation, LlmContextTagSelection, MockSenseGenerator};
 use novels::models::*;
-use novels::prose::MockProseGenerator;
+use novels::prose::{MockProseGenerator, MockScenePlanner};
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
 use std::sync::Arc;
@@ -41,6 +41,7 @@ async fn end_to_end_with_mock() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
 
     let cid = CharacterId(uuid::Uuid::new_v4());

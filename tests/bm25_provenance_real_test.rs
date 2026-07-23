@@ -110,7 +110,7 @@ async fn real_provenance_scan_zero_on_clean_assemble() {
     use novels::llm::{LlmCharacterDerivation, LlmContextTagSelection, MockSenseGenerator};
     use novels::models::StoryError;
     use novels::models::*;
-    use novels::prose::{LlmNarrative, NarrativeBeat, ProseGenerator};
+    use novels::prose::{LlmNarrative, MockScenePlanner, NarrativeBeat, ProseGenerator};
     use novels::scene::StoryService;
     use std::sync::Arc;
 
@@ -164,7 +164,13 @@ async fn real_provenance_scan_zero_on_clean_assemble() {
             camera_beat_id: String::new(),
         }],
     };
-    let svc = StoryService::new(db, v, sense, Arc::new(FixedProse(narrative)));
+    let svc = StoryService::new(
+        db,
+        v,
+        sense,
+        Arc::new(FixedProse(narrative)),
+        Arc::new(MockScenePlanner::fallback()),
+    );
 
     svc.db()
         .characters()
@@ -213,7 +219,7 @@ async fn real_quality_report_flags_sparse_prose() {
     use novels::llm::{LlmCharacterDerivation, LlmContextTagSelection, MockSenseGenerator};
     use novels::models::StoryError;
     use novels::models::*;
-    use novels::prose::{LlmNarrative, NarrativeBeat, ProseGenerator};
+    use novels::prose::{LlmNarrative, MockScenePlanner, NarrativeBeat, ProseGenerator};
     use novels::scene::StoryService;
     use std::sync::Arc;
 
@@ -254,7 +260,13 @@ async fn real_quality_report_flags_sparse_prose() {
             camera_beat_id: String::new(),
         }],
     };
-    let svc = StoryService::new(db, v, sense, Arc::new(EmptyProse(narrative)));
+    let svc = StoryService::new(
+        db,
+        v,
+        sense,
+        Arc::new(EmptyProse(narrative)),
+        Arc::new(MockScenePlanner::fallback()),
+    );
 
     svc.db()
         .characters()
