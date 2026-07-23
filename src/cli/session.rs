@@ -32,8 +32,8 @@ impl CliError {
     pub fn summary(&self) -> String {
         match self {
             CliError::Message { summary, .. } => summary.clone(),
-            // StoryError 实现了 thiserror::Error 的 Display（英文），直接透传。
-            CliError::Story(e) => e.to_string(),
+            // StoryError 映射为中文摘要。
+            CliError::Story(e) => crate::cli::commands::story_error_summary(e),
         }
     }
 }

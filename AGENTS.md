@@ -337,12 +337,21 @@ python tools/distill_quality_report.py
 Run from repository root:
 
 ```powershell
-cargo run
+cargo run                                  # bare: demo + API on :3000 (legacy mode)
+cargo run -- repl                          # interactive story-operation REPL
+cargo run -- character create 宝玉 --tags 痴情  # one-shot subcommand
+cargo run -- scene create 事件 --with 宝玉
+cargo run -- derive --character 宝玉
+cargo run -- narrate
+cargo run -- show derivation
+cargo run -- show prose
 ```
 
-- `src/main.rs` loads `.env` through `dotenv::dotenv().ok()`.
-- With `DEEPSEEK_API_KEY`, it constructs `RigSenseGenerator` and calls DeepSeek.
-- Without the key, it prints a warning and uses `MockSenseGenerator`; this path must remain runnable for local development and tests.
+- `src/main.rs` parses `Cli` via clap. No subcommand -> legacy demo + API; subcommand -> `cli::run_cli`.
+- CLI commands route through `StoryService` exclusively; no free chat, no `--raw-llm` / `--skip-validate`.
+- Without `DEEPSEEK_API_KEY`, both sense + prose generators degrade to Mock; CLI reports `status: warning` +「非生产质量」.
+- SQLite busy/lock errors surface as a readable Chinese message; MVP does not provide multi-writer merge.
+- REPL prompt goes to stderr so stdout stays clean for body pipelines (narrate/show prose).
 - `novels.db` is created or reused in the repository root.
 - Vocabulary: `load_runtime_vocab` loads `assets/vocab.yaml`, then merges `assets/distilled/` when present unless `NOVELS_SKIP_DISTILLED=1`; override dir with `NOVELS_DISTILLED_DIR`.
 

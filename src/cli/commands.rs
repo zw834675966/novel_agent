@@ -15,7 +15,7 @@ use crate::cli::observation::{Observation, Status, quality_from_prose};
 use crate::cli::prose_cache::ProseCache;
 use crate::cli::session::{Session, resolve_character, resolve_scene};
 use crate::models::{
-    CharacterDerivation, CharacterId, CreateScene, SceneDerivationDetail, SceneId,
+    CharacterDerivation, CharacterId, CreateScene, SceneDerivationDetail, SceneId, StoryError,
 };
 use crate::scene::StoryService;
 
@@ -74,7 +74,7 @@ async fn execute_character(cmd: CharacterCmd, ctx: &mut CommandContext<'_>) -> O
                     artifacts.insert("character_id".into(), id.0.to_string());
                     success_observation("角色已创建".into(), artifacts)
                 }
-                Err(e) => err_observation(e.to_string()),
+                Err(e) => err_from_story(e),
             }
         }
         CharacterCmd::List => match ctx.service.list_characters().await {
@@ -87,7 +87,7 @@ async fn execute_character(cmd: CharacterCmd, ctx: &mut CommandContext<'_>) -> O
                 artifacts.insert("characters".into(), lines.join("\n"));
                 success_observation(format!("{} 个角色", chars.len()), artifacts)
             }
-            Err(e) => err_observation(e.to_string()),
+            Err(e) => err_from_story(e),
         },
         CharacterCmd::Show { id_or_name } => {
             match resolve_character(ctx.service.db(), &id_or_name).await {
@@ -101,7 +101,7 @@ async fn execute_character(cmd: CharacterCmd, ctx: &mut CommandContext<'_>) -> O
                         success_observation(format!("角色：{}", c.name), artifacts)
                     }
                     Ok(None) => err_observation(format!("未找到角色：{id_or_name}")),
-                    Err(e) => err_observation(e.to_string()),
+                    Err(e) => err_from_story(e),
                 },
                 Err(e) => err_observation(e.summary()),
             }
@@ -138,7 +138,7 @@ async fn execute_scene(cmd: SceneCmd, ctx: &mut CommandContext<'_>) -> Observati
                     artifacts.insert("scene_id".into(), scene_id.0.to_string());
                     success_observation("场景已创建".into(), artifacts)
                 }
-                Err(e) => err_observation(e.to_string()),
+                Err(e) => err_from_story(e),
             }
         }
         SceneCmd::List => match ctx.service.list_scenes().await {
@@ -151,7 +151,7 @@ async fn execute_scene(cmd: SceneCmd, ctx: &mut CommandContext<'_>) -> Observati
                 artifacts.insert("scenes".into(), lines.join("\n"));
                 success_observation(format!("{} 个场景", scenes.len()), artifacts)
             }
-            Err(e) => err_observation(e.to_string()),
+            Err(e) => err_from_story(e),
         },
         SceneCmd::Show { id_or_name } => match resolve_scene(ctx.service.db(), &id_or_name).await {
             Ok(id) => match ctx.service.db().scenes().get(id).await {
@@ -166,7 +166,7 @@ async fn execute_scene(cmd: SceneCmd, ctx: &mut CommandContext<'_>) -> Observati
                     success_observation(format!("场景：{}", s.objective_event), artifacts)
                 }
                 Ok(None) => err_observation(format!("未找到场景：{id_or_name}")),
-                Err(e) => err_observation(e.to_string()),
+                Err(e) => err_from_story(e),
             },
             Err(e) => err_observation(e.summary()),
         },
@@ -277,7 +277,7 @@ async fn execute_derive(
                     next: vec![],
                 })
             }
-            Err(e) => wrap(err_observation(e.to_string())),
+            Err(e) => wrap(err_from_story(e)),
         }
     } else {
         // 全场景推导
@@ -330,7 +330,7 @@ async fn execute_narrate(scene: Option<String>, ctx: &mut CommandContext<'_>) ->
     // 2. 从 DB 加载推导详情
     let details = match ctx.service.scene_derivations(scene_id).await {
         Ok(d) => d,
-        Err(e) => return wrap(err_observation(e.to_string())),
+        Err(e) => return wrap(err_from_story(e)),
     };
 
     // 3. 预检：无推导 -> 提示先 derive
@@ -378,7 +378,7 @@ async fn execute_narrate(scene: Option<String>, ctx: &mut CommandContext<'_>) ->
                 body: Some(prose.text.clone()),
             }
         }
-        Err(e) => wrap(err_observation(e.to_string())),
+        Err(e) => wrap(err_from_story(e)),
     }
 }
 
@@ -396,7 +396,7 @@ async fn execute_show_derivation(
 
     let details = match ctx.service.scene_derivations(scene_id).await {
         Ok(d) => d,
-        Err(e) => return wrap(err_observation(e.to_string())),
+        Err(e) => return wrap(err_from_story(e)),
     };
 
     if details.is_empty() {
@@ -560,6 +560,42 @@ fn err_observation(summary: String) -> Observation {
     }
 }
 
+/// 把 StoryError 映射为中文错误摘要。
+///
+/// 对数据库锁定/忙碌给出专门的友好提示；
+/// 其余变体的 Display 文本作为兜底（附带中文前缀）。
+pub fn story_error_summary(e: &StoryError) -> String {
+    match e {
+        StoryError::Database(msg) => {
+            let lower = msg.to_lowercase();
+            if lower.contains("database is locked") || lower.contains("busy") {
+                "数据库忙碌（可能与 API 进程同时写入 novels.db）；请稍后重试，MVP 不提供多写合并。"
+                    .to_string()
+            } else {
+                format!("数据库错误：{msg}")
+            }
+        }
+        StoryError::SceneNotFound(id) => format!("未找到场景：{id:?}"),
+        StoryError::CharacterNotFound(id) => format!("未找到角色：{id:?}"),
+        StoryError::NotSceneParticipant(cid, sid) => {
+            format!("角色 {cid:?} 不是场景 {sid:?} 的参与者")
+        }
+        StoryError::InvalidParticipant(msg) => format!("无效参与者：{msg}"),
+        StoryError::InvalidNarrationContext(msg) => format!("叙述上下文无效：{msg}"),
+        StoryError::Llm(msg) => format!("LLM 调用失败：{msg}"),
+        StoryError::InvalidVocabularySelection(msg) => format!("无效词汇选择：{msg}"),
+        StoryError::VocabularyLoad(msg) => format!("词库加载失败：{msg}"),
+        StoryError::RelationshipCandidateNotFound(id) => format!("未找到关系候选：{id:?}"),
+        StoryError::RelationshipCandidateResolved(id) => format!("关系候选已确认：{id:?}"),
+        StoryError::InvalidRelationshipCandidate(msg) => format!("无效关系候选：{msg}"),
+    }
+}
+
+/// 从 StoryError 构造错误观测。
+fn err_from_story(e: StoryError) -> Observation {
+    err_observation(story_error_summary(&e))
+}
+
 /// 把 Observation 包成无正文的 CommandOutput。
 fn wrap(observation: Observation) -> CommandOutput {
     CommandOutput {
@@ -578,5 +614,32 @@ mod tests {
         assert_eq!(split_csv("a,, ,b"), vec!["a", "b"]);
         assert_eq!(split_csv(""), Vec::<String>::new());
         assert_eq!(split_csv("  "), Vec::<String>::new());
+    }
+
+    #[test]
+    fn story_error_busy_db_maps_to_chinese() {
+        let e = StoryError::Database("database is locked".into());
+        let msg = story_error_summary(&e);
+        assert!(
+            msg.contains("数据库忙碌"),
+            "busy db should map to busy message: {msg}"
+        );
+    }
+
+    #[test]
+    fn story_error_not_found_maps_to_chinese() {
+        let e = StoryError::CharacterNotFound(CharacterId(Uuid::nil()));
+        let msg = story_error_summary(&e);
+        assert!(
+            msg.contains("未找到角色"),
+            "character not found should be Chinese: {msg}"
+        );
+    }
+
+    #[test]
+    fn story_error_llm_maps_to_chinese() {
+        let e = StoryError::Llm("timeout".into());
+        let msg = story_error_summary(&e);
+        assert!(msg.contains("LLM"), "llm error should mention LLM: {msg}");
     }
 }
