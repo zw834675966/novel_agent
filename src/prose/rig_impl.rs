@@ -80,14 +80,8 @@ fn build_prompt(req: &NarrateRequest) -> String {
         // 再按 key。与 vocab::loader::collect_candidates 一致,保证稳定。
         let mut cands = cr.candidates.clone();
         cands.sort_by(|a, b| {
-            let sa = crate::vocab::SENSES
-                .iter()
-                .position(|s| *s == a.sense)
-                .unwrap_or(usize::MAX);
-            let sb = crate::vocab::SENSES
-                .iter()
-                .position(|s| *s == b.sense)
-                .unwrap_or(usize::MAX);
+            let sa = crate::vocab::sense_order(&a.sense);
+            let sb = crate::vocab::sense_order(&b.sense);
             sa.cmp(&sb).then_with(|| a.id.cmp(&b.id))
         });
         for cand in &cands {
@@ -110,7 +104,7 @@ fn build_prompt(req: &NarrateRequest) -> String {
 mod tests {
     use super::*;
     use crate::models::{Character, CharacterId, Scene, SceneId};
-    use crate::prose::{CharacterProseCandidates, ProseCandidate};
+    use crate::prose::{CharacterProseCandidates, VocabularyCandidate};
     use chrono::Utc;
     use uuid::Uuid;
 
@@ -127,8 +121,8 @@ mod tests {
         }
     }
 
-    fn make_candidate(id: &str, sense: &str, text: &str, tags: &[&str]) -> ProseCandidate {
-        ProseCandidate {
+    fn make_candidate(id: &str, sense: &str, text: &str, tags: &[&str]) -> VocabularyCandidate {
+        VocabularyCandidate {
             id: id.into(),
             sense: sense.into(),
             text: text.into(),

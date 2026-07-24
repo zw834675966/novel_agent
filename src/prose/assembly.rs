@@ -98,13 +98,15 @@ impl AssembledProse {
         let mut injected_quotes: Vec<String> = Vec::new();
 
         for beat in &narrative.beats {
-            let Beat { pov, action, refs } = unpack_beat(beat);
-            if !participant_ids.contains(&pov) {
+            let pov = &beat.pov;
+            let action = &beat.action;
+            let refs = &beat.sensation_refs;
+            if !participant_ids.contains(pov) {
                 rejected += 1;
                 continue;
             }
             // pov 必须有匹配的 derivation;缺失则拒绝整 beat
-            let allowed = match cand_map.get(&pov) {
+            let allowed = match cand_map.get(pov) {
                 Some(set) => set.clone(),
                 None => {
                     rejected += 1;
@@ -112,12 +114,12 @@ impl AssembledProse {
                 }
             };
             total_refs_seen += refs.len();
-            let (desc, stripped, quotes) = assemble_beat_descriptions(&refs, vocab, &allowed);
+            let (desc, stripped, quotes) = assemble_beat_descriptions(refs, vocab, &allowed);
             total_stripped += stripped;
             quote_chars += desc.chars().count();
             injected_quotes.extend(quotes);
 
-            let action = Self::sanitize_action(&action);
+            let action = Self::sanitize_action(action);
             let para = if desc.is_empty() {
                 if !action.trim().is_empty() {
                     action_only += 1;
@@ -175,16 +177,11 @@ impl AssembledProse {
 
 /// 从该角色的 derivation 收集全部合法候选片段 ID(8 类合并)
 pub(crate) fn candidate_refs_for(derivation: &CharacterDerivation) -> HashSet<String> {
-    let s = &derivation.sensations;
-    s.visual_ids
+    derivation
+        .sensations
+        .sense_fields()
         .iter()
-        .chain(s.auditory_ids.iter())
-        .chain(s.olfactory_ids.iter())
-        .chain(s.tactile_ids.iter())
-        .chain(s.gustatory_ids.iter())
-        .chain(s.emotion_ids.iter())
-        .chain(s.gesture_ids.iter())
-        .chain(s.atmosphere_ids.iter())
+        .flat_map(|(_, ids)| ids.iter())
         .map(|id| id.as_str().to_string())
         .collect()
 }
@@ -240,20 +237,6 @@ fn assemble_beat_descriptions(
     }
     let quotes = parts.clone();
     (parts.join(""), stripped, quotes)
-}
-
-struct Beat {
-    pov: String,
-    action: String,
-    refs: Vec<String>,
-}
-
-fn unpack_beat(b: &super::contract::NarrativeBeat) -> Beat {
-    Beat {
-        pov: b.pov.clone(),
-        action: b.action.clone(),
-        refs: b.sensation_refs.clone(),
-    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
 
-use crate::llm::VocabularyCandidate;
+use crate::models::VocabularyCandidate;
 
 /// 词库条目
 /// ============
@@ -40,6 +40,38 @@ pub struct VocabFile {
     pub atmosphere: HashMap<String, VocabEntry>, // 氛围环境
 }
 
+impl VocabFile {
+    /// 返回 8 个感官 HashMap 的 `(sense_name, &map)` 数组，用于统一迭代。
+    pub(crate) fn sense_maps(&self) -> [(&'static str, &HashMap<String, VocabEntry>); 8] {
+        [
+            ("visual", &self.visual),
+            ("auditory", &self.auditory),
+            ("olfactory", &self.olfactory),
+            ("tactile", &self.tactile),
+            ("gustatory", &self.gustatory),
+            ("emotion", &self.emotion),
+            ("gesture", &self.gesture),
+            ("atmosphere", &self.atmosphere),
+        ]
+    }
+
+    /// 返回 8 个感官 HashMap 的可变引用数组，用于统一写入。
+    pub(crate) fn sense_maps_mut(
+        &mut self,
+    ) -> [(&'static str, &mut HashMap<String, VocabEntry>); 8] {
+        [
+            ("visual", &mut self.visual),
+            ("auditory", &mut self.auditory),
+            ("olfactory", &mut self.olfactory),
+            ("tactile", &mut self.tactile),
+            ("gustatory", &mut self.gustatory),
+            ("emotion", &mut self.emotion),
+            ("gesture", &mut self.gesture),
+            ("atmosphere", &mut self.atmosphere),
+        ]
+    }
+}
+
 /// 全部感官/描写类别(候选集与校验共用同一份定义,防止遗漏)
 pub const SENSES: [&str; 8] = [
     "visual",
@@ -59,6 +91,15 @@ pub const DEFAULT_TOTAL_CAP: usize = 96;
 /// 传给 LLM 的 known tags 上限
 pub const DEFAULT_TAG_CAP: usize = 80;
 
+/// Position of `sense` in SENSES, or `usize::MAX` if unknown.
+/// Replaces 6 inline copies of `SENSES.iter().position(...).unwrap_or(usize::MAX)`.
+pub(crate) fn sense_order(sense: &str) -> usize {
+    SENSES
+        .iter()
+        .position(|s| *s == sense)
+        .unwrap_or(usize::MAX)
+}
+
 /// 词库（已加载状态）
 /// =====================
 /// 提供按感官类别查询、按标签过滤、生成候选集等功能。
@@ -73,7 +114,7 @@ pub struct Vocab {
 /// substring TF** (`text.matches(term).count()` + exact tag hit), not char-level
 /// tokenization, so multi-char names like 「宝玉」 stay atomic.
 struct Bm25Scores {
-    /// candidate id → BM25 score (0 if missing / empty query)
+    /// candidate id -> BM25 score (0 if missing / empty query)
     scores: HashMap<String, f64>,
 }
 
@@ -170,17 +211,11 @@ impl Vocab {
 
     /// 获取某感官类别的所有条目（返回引用，不拷贝）
     pub fn entries(&self, sense: &str) -> Option<&HashMap<String, VocabEntry>> {
-        match sense {
-            "visual" => Some(&self.file.visual),
-            "auditory" => Some(&self.file.auditory),
-            "olfactory" => Some(&self.file.olfactory),
-            "tactile" => Some(&self.file.tactile),
-            "gustatory" => Some(&self.file.gustatory),
-            "emotion" => Some(&self.file.emotion),
-            "gesture" => Some(&self.file.gesture),
-            "atmosphere" => Some(&self.file.atmosphere),
-            _ => None,
-        }
+        self.file
+            .sense_maps()
+            .into_iter()
+            .find(|(s, _)| *s == sense)
+            .map(|(_, m)| m)
     }
 
     /// 检查某个 sense.key 是否存在
@@ -188,44 +223,6 @@ impl Vocab {
         self.entries(sense)
             .map(|m| m.contains_key(key))
             .unwrap_or(false)
-    }
-
-    /// 按感官类别和标签过滤，返回匹配的 VocabularyId 列表
-    ///
-    /// # 参数
-    /// - `sense` — 五感类别名称
-    /// - `tags`  — 目标标签（指定标签时只返回同时匹配的条目；为空时返回全部）
-    ///
-    /// # 返回
-    /// 格式如 ["visual.bloodstain", "visual.candlelight"]
-    pub fn candidates(&self, sense: &str, tags: &[&str]) -> Vec<crate::models::VocabularyId> {
-        let Some(map) = self.entries(sense) else {
-            return vec![];
-        };
-        map.iter()
-            .filter_map(|(k, e)| {
-                if tags.is_empty() || tags.iter().any(|t| e.tags.iter().any(|et| et == t)) {
-                    crate::models::VocabularyId::new(&format!("{sense}.{k}")).ok()
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// 生成全感官候选集（HashSet<String>，用于快速校验 LLM 输出）
-    ///
-    /// # 用途
-    /// 将结果传给 VocabularyId::new() 的 validate 函数，
-    /// 检查 LLM 输出的每个 ID 是否在候选集中。
-    pub fn candidate_set(&self, tags: &[&str]) -> std::collections::HashSet<String> {
-        let mut set = std::collections::HashSet::new();
-        for sense in SENSES {
-            for id in self.candidates(sense, tags) {
-                set.insert(id.as_str().to_string());
-            }
-        }
-        set
     }
 
     /// Returns every vocabulary tag in stable order.
@@ -264,13 +261,8 @@ impl Vocab {
         }
     }
 
-    /// Returns known tags truncated to `max` (stable order from [`Self::known_tags`]).
-    pub fn known_tags_limited(&self, max: usize) -> Vec<String> {
-        self.known_tags_ranked_limited(&[], max)
-    }
-
     /// Score a vocabulary tag for shortlist relevance (higher is better).
-    pub fn score_tag(tag: &str, query_terms: &[String]) -> i64 {
+    pub(crate) fn score_tag(tag: &str, query_terms: &[String]) -> i64 {
         let mut score: i64 = 0;
         for q in query_terms {
             let q = q.trim();
@@ -301,26 +293,13 @@ impl Vocab {
         tags
     }
 
-    /// Like [`Self::candidates_for_tags`], then applies per-sense and total caps.
-    ///
-    /// When `query_terms` is empty, ranking is score-0 with id order (stable).
-    /// Prefer [`Self::candidates_ranked_limited`] when scene/character context exists.
-    pub fn candidates_for_tags_limited(
-        &self,
-        selected: &[String],
-        per_sense: usize,
-        total_max: usize,
-    ) -> Vec<VocabularyCandidate> {
-        self.candidates_ranked_limited(selected, &[], per_sense, total_max)
-    }
-
     /// Selected-tag hits + exact name/tag voice isolation (critique P0/P1).
     /// Higher is better. Pure function; deterministic.
     ///
     /// Text/substring relevance is scored by BM25 in [`Self::candidates_ranked_limited`];
     /// this function only adds discrete boosts that BM25 should not replace
     /// (selected-tag preference + exact character-name tag isolation).
-    pub fn score_candidate(
+    pub(crate) fn score_candidate(
         c: &VocabularyCandidate,
         selected: &[String],
         query_terms: &[String],
@@ -337,7 +316,7 @@ impl Vocab {
                 continue;
             }
             let weight = (q.chars().count() as i64).clamp(1, 8);
-            // Exact character-name / term on tag → strong voice boost (P1).
+            // Exact character-name / term on tag -> strong voice boost (P1).
             if c.tags.iter().any(|t| t == q) {
                 score += 40 * weight;
             }
@@ -347,7 +326,7 @@ impl Vocab {
 
     /// BM25 base (×1000, rounded) + [`Self::score_candidate`] boosts.
     /// Used by ranked selection; exposed for tests.
-    pub fn score_candidate_with_bm25(
+    pub(crate) fn score_candidate_with_bm25(
         c: &VocabularyCandidate,
         selected: &[String],
         query_terms: &[String],
@@ -360,7 +339,7 @@ impl Vocab {
     /// Rank by BM25 + voice/selected boosts (DESC), then SENSES order + id (ASC); apply caps.
     ///
     /// Builds a zero-dependency BM25 index over the candidate pool (text + tags as docs,
-    /// whole-term substring TF). Empty `query_terms` → BM25=0, order falls back to
+    /// whole-term substring TF). Empty `query_terms` -> BM25=0, order falls back to
     /// selected-tag boosts then stable sense/id order.
     pub fn candidates_ranked_limited(
         &self,
@@ -376,14 +355,8 @@ impl Vocab {
             let sb = Self::score_candidate_with_bm25(b, selected, query_terms, bm25.get(&b.id));
             // Score DESC; ties break by SENSES order then id (stable with prior dict-cap tests).
             sb.cmp(&sa).then_with(|| {
-                let ia = SENSES
-                    .iter()
-                    .position(|s| *s == a.sense)
-                    .unwrap_or(usize::MAX);
-                let ib = SENSES
-                    .iter()
-                    .position(|s| *s == b.sense)
-                    .unwrap_or(usize::MAX);
+                let ia = sense_order(&a.sense);
+                let ib = sense_order(&b.sense);
                 ia.cmp(&ib).then_with(|| a.id.cmp(&b.id))
             })
         });
@@ -432,15 +405,15 @@ impl Vocab {
     }
 
     /// 合并另一份词库(蒸馏素材库叠加到手写基础词库上;键冲突时以 other 为准)
-    pub fn merge(&mut self, other: Vocab) {
-        self.file.visual.extend(other.file.visual);
-        self.file.auditory.extend(other.file.auditory);
-        self.file.olfactory.extend(other.file.olfactory);
-        self.file.tactile.extend(other.file.tactile);
-        self.file.gustatory.extend(other.file.gustatory);
-        self.file.emotion.extend(other.file.emotion);
-        self.file.gesture.extend(other.file.gesture);
-        self.file.atmosphere.extend(other.file.atmosphere);
+    pub fn merge(&mut self, mut other: Vocab) {
+        for ((_, dst), (_, src)) in self
+            .file
+            .sense_maps_mut()
+            .into_iter()
+            .zip(other.file.sense_maps_mut())
+        {
+            dst.extend(std::mem::take(src));
+        }
     }
 
     /// 从目录加载所有 *.yaml 并合并(用于 assets/distilled/ 素材库)

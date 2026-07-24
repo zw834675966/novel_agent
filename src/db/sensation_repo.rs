@@ -134,6 +134,9 @@ impl SensationRepo {
         sel: &SensorySelection,
         now: DateTime<Utc>,
     ) -> Result<(), StoryError> {
+        // Pre-compute all 8 JSON columns via sense_fields() (sqlx .bind() chain
+        // cannot be a loop due to its type-level query builder).
+        let jsons: [String; 8] = sel.sense_fields().map(|(_, ids)| ids_to_json(ids));
         sqlx::query(
             "INSERT INTO character_sensations \
              (id, character_id, scene_id, visual_ids_json, auditory_ids_json, olfactory_ids_json, \
@@ -144,14 +147,14 @@ impl SensationRepo {
         .bind(Uuid::new_v4().to_string())
         .bind(character_id.0.to_string())
         .bind(scene_id.0.to_string())
-        .bind(ids_to_json(&sel.visual_ids))
-        .bind(ids_to_json(&sel.auditory_ids))
-        .bind(ids_to_json(&sel.olfactory_ids))
-        .bind(ids_to_json(&sel.tactile_ids))
-        .bind(ids_to_json(&sel.gustatory_ids))
-        .bind(ids_to_json(&sel.emotion_ids))
-        .bind(ids_to_json(&sel.gesture_ids))
-        .bind(ids_to_json(&sel.atmosphere_ids))
+        .bind(&jsons[0])
+        .bind(&jsons[1])
+        .bind(&jsons[2])
+        .bind(&jsons[3])
+        .bind(&jsons[4])
+        .bind(&jsons[5])
+        .bind(&jsons[6])
+        .bind(&jsons[7])
         .bind(now.to_rfc3339())
         .execute(&mut **tx)
         .await?;

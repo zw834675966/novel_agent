@@ -8,7 +8,7 @@
 // 与 llm 模块对称:ProseGenerator trait + rig/mock 双实现。
 //
 // 公共 API:LlmNarrative / NarrativeBeat / NarrateRequest /
-//   ProseCandidate / CharacterProseCandidates / ProseGenerator /
+//   VocabularyCandidate / CharacterProseCandidates / ProseGenerator /
 //   MockProseGenerator / AssembledProse。
 // crate 私有:AssembledProse::assemble、
 //   candidate_refs_for。
@@ -19,9 +19,10 @@ mod generator; // ProseGenerator trait + NarrateRequest + 候选类型
 mod mock; // 测试用 mock
 mod rig_impl; // rig(DeepSeek)生产实现
 
+pub use crate::models::VocabularyCandidate;
 pub use assembly::{AssembledProse, MIN_QUOTE_DENSITY, ProseQualityReport};
 pub use contract::{LlmNarrative, NarrativeBeat};
-pub use generator::{CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator};
+pub use generator::{CharacterProseCandidates, NarrateRequest, ProseGenerator};
 pub use mock::MockProseGenerator;
 pub use rig_impl::RigProseGenerator;
 

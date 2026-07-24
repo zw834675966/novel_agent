@@ -3,7 +3,6 @@ use crate::llm::{
     SenseGenerator,
 };
 use crate::models::StoryError;
-use crate::vocab::Vocab;
 use rig::client::CompletionClient;
 use rig::extractor::Extractor;
 use rig::providers::deepseek;
@@ -17,12 +16,9 @@ use rig::providers::deepseek;
 ///   3. 发送到 DeepSeek API
 ///   4. 反序列化返回的 tool_call 为 LlmCharacterDerivation
 ///
-/// vocab 字段用于后续增强（如将词汇描述注入 prompt），当前保留但未使用。
 pub struct RigSenseGenerator {
     tag_extractor: Extractor<deepseek::CompletionModel, LlmContextTagSelection>,
     derivation_extractor: Extractor<deepseek::CompletionModel, LlmCharacterDerivation>,
-    #[allow(dead_code)]
-    vocab: Vocab,
 }
 
 impl RigSenseGenerator {
@@ -30,8 +26,7 @@ impl RigSenseGenerator {
     ///
     /// # 参数
     /// - `client` — DeepSeek 客户端（从 DEEPSEEK_API_KEY 创建）
-    /// - `vocab`  — 感官词库（后续用于注入词汇描述）
-    pub fn new(client: deepseek::Client, vocab: Vocab) -> Self {
+    pub fn new(client: deepseek::Client) -> Self {
         let tag_extractor = client
             .extractor::<LlmContextTagSelection>(deepseek::DEEPSEEK_V4_FLASH)
             .retries(1)
@@ -43,7 +38,6 @@ impl RigSenseGenerator {
         Self {
             tag_extractor,
             derivation_extractor,
-            vocab,
         }
     }
     /// 构建发送给 LLM 的 prompt

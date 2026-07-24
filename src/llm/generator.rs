@@ -1,15 +1,8 @@
 use crate::llm::{LlmCharacterDerivation, LlmContextTagSelection};
 use crate::models::{
     Character, CharacterMemory, Scene, SensorySelection, StoredPlotDevelopment, StoryError,
+    VocabularyCandidate,
 };
-
-#[derive(Debug, Clone)]
-pub struct VocabularyCandidate {
-    pub id: String,
-    pub sense: String,
-    pub text: String,
-    pub tags: Vec<String>,
-}
 
 #[derive(Debug, Clone)]
 pub struct ContextTagRequest {

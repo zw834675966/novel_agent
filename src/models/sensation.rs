@@ -27,3 +27,35 @@ pub struct SensorySelection {
     #[serde(default)]
     pub atmosphere_ids: Vec<VocabularyId>, // 氛围环境（原著环境描写片段）
 }
+
+impl SensorySelection {
+    /// 返回 8 个感官字段的 `(sense_name, &ids)` 数组，用于统一迭代。
+    ///
+    /// 字段定义保留（JsonSchema 需要），此方法只是消除 8 行机械枚举。
+    pub fn sense_fields(&self) -> [(&'static str, &[VocabularyId]); 8] {
+        [
+            ("visual", &self.visual_ids),
+            ("auditory", &self.auditory_ids),
+            ("olfactory", &self.olfactory_ids),
+            ("tactile", &self.tactile_ids),
+            ("gustatory", &self.gustatory_ids),
+            ("emotion", &self.emotion_ids),
+            ("gesture", &self.gesture_ids),
+            ("atmosphere", &self.atmosphere_ids),
+        ]
+    }
+
+    /// 返回 8 个感官字段的可变引用数组，用于统一写入（如校验清理）。
+    pub fn sense_fields_mut(&mut self) -> [(&'static str, &mut Vec<VocabularyId>); 8] {
+        [
+            ("visual", &mut self.visual_ids),
+            ("auditory", &mut self.auditory_ids),
+            ("olfactory", &mut self.olfactory_ids),
+            ("tactile", &mut self.tactile_ids),
+            ("gustatory", &mut self.gustatory_ids),
+            ("emotion", &mut self.emotion_ids),
+            ("gesture", &mut self.gesture_ids),
+            ("atmosphere", &mut self.atmosphere_ids),
+        ]
+    }
+}

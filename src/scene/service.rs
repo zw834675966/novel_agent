@@ -2,7 +2,7 @@ use crate::db::Db;
 use crate::llm::{ContextTagRequest, DerivationRequest, LlmCharacterDerivation, SenseGenerator};
 use crate::models::{CharacterDerivation, CharacterId, CreateScene, SceneId, StoryError};
 use crate::prose::{
-    AssembledProse, CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator,
+    AssembledProse, CharacterProseCandidates, NarrateRequest, ProseGenerator, VocabularyCandidate,
 };
 use crate::text_guard::{MAX_MEMORY_CHARS, MAX_PLOT_REASON_CHARS, sanitize_free_text};
 use crate::vocab::Vocab;
@@ -366,14 +366,8 @@ impl StoryService {
         sorted_candidates.sort_by_key(|g| g.character_id.0);
         for group in &mut sorted_candidates {
             group.candidates.sort_by(|a, b| {
-                let sa = crate::vocab::SENSES
-                    .iter()
-                    .position(|s| *s == a.sense)
-                    .unwrap_or(usize::MAX);
-                let sb = crate::vocab::SENSES
-                    .iter()
-                    .position(|s| *s == b.sense)
-                    .unwrap_or(usize::MAX);
+                let sa = crate::vocab::sense_order(&a.sense);
+                let sb = crate::vocab::sense_order(&b.sense);
                 sa.cmp(&sb).then_with(|| a.id.cmp(&b.id))
             });
             for cand in &mut group.candidates {
@@ -425,7 +419,7 @@ fn build_candidate_refs(
                 .filter_map(|raw| {
                     let vid = crate::models::VocabularyId::new(raw).ok()?;
                     let entry = vocab.entries(vid.sense())?.get(vid.key())?;
-                    Some(ProseCandidate {
+                    Some(VocabularyCandidate {
                         id: raw.to_string(),
                         sense: vid.sense().to_string(),
                         text: entry.text.clone(),

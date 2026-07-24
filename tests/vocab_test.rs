@@ -3,7 +3,7 @@
 // 测试 Vocab 的 YAML 加载、候选集生成、validate_selection 校验逻辑。
 
 use novels::models::*;
-use novels::vocab::{Vocab, validate};
+use novels::vocab::{SENSES, Vocab, validate};
 use std::collections::HashSet;
 
 fn sample_yaml() -> &'static str {
@@ -19,6 +19,19 @@ auditory:
 "#
 }
 
+/// Build a HashSet of all vocab IDs (replaces test-only Vocab::candidate_set)
+fn all_vocab_ids(v: &Vocab) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for sense in SENSES {
+        if let Some(map) = v.entries(sense) {
+            for key in map.keys() {
+                set.insert(format!("{sense}.{key}"));
+            }
+        }
+    }
+    set
+}
+
 #[test]
 fn loads_all_senses() {
     // 验证 YAML 能正确加载所有感官类别
@@ -32,9 +45,10 @@ fn loads_all_senses() {
 fn candidates_filter_by_tag() {
     // 验证按标签过滤候选集
     let v = Vocab::load_from_str(sample_yaml()).unwrap();
-    let cands = v.candidates("visual", &["injury"]);
-    assert_eq!(cands.len(), 1);
-    assert_eq!(cands[0].as_str(), "visual.bloodstain");
+    let cands = v.candidates_for_tags(&["injury".to_string()]);
+    let visual: Vec<_> = cands.iter().filter(|c| c.sense == "visual").collect();
+    assert_eq!(visual.len(), 1);
+    assert_eq!(visual[0].id, "visual.bloodstain");
 }
 
 #[test]
@@ -61,10 +75,10 @@ emotion:
   e: { text: "e", tags: ["t"] }
 "#;
     let v = Vocab::load_from_str(yaml).unwrap();
-    let c = v.candidates_for_tags_limited(&["t".into()], 2, 3);
+    let c = v.candidates_ranked_limited(&["t".into()], &[], 2, 3);
     assert!(c.len() <= 3);
     // 确定性：同输入多次结果一致（VocabularyCandidate 无 PartialEq，比 id 列表）
-    let c2 = v.candidates_for_tags_limited(&["t".into()], 2, 3);
+    let c2 = v.candidates_ranked_limited(&["t".into()], &[], 2, 3);
     let ids: Vec<_> = c.iter().map(|x| x.id.as_str()).collect();
     let ids2: Vec<_> = c2.iter().map(|x| x.id.as_str()).collect();
     assert_eq!(ids, ids2);
@@ -268,7 +282,7 @@ atmosphere:
     assert!(v.has("gesture", "zhz-c003-02"));
     assert!(v.has("atmosphere", "hlm-c005-03"));
 
-    let set = v.candidate_set(&[]);
+    let set = all_vocab_ids(&v);
     assert_eq!(set.len(), 3);
 
     let mut sel = SensorySelection::default();
@@ -299,7 +313,7 @@ emotion:
     base.merge(distilled);
     assert!(base.has("visual", "bloodstain"));
     assert!(base.has("emotion", "zhz-c001-01"));
-    assert_eq!(base.candidate_set(&[]).len(), 3);
+    assert_eq!(all_vocab_ids(&base).len(), 3);
 }
 
 #[test]

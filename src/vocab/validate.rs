@@ -30,38 +30,30 @@ pub fn validate_selection(
 ) -> ValidationResult {
     let mut cleaned = SensorySelection::default();
     let mut stripped = Vec::new();
+    let mut all_empty = true;
 
-    // 局部函数：校验单维度列表
-    let mut clean = |ids: &[VocabularyId], prefix: &str| -> Vec<VocabularyId> {
-        ids.iter()
+    for ((sense, src), (_, dst)) in sel
+        .sense_fields()
+        .into_iter()
+        .zip(cleaned.sense_fields_mut())
+    {
+        let prefix = format!("{sense}.");
+        let kept: Vec<VocabularyId> = src
+            .iter()
             .filter_map(|id| {
-                if id.as_str().starts_with(prefix) && candidates.contains(id.as_str()) {
+                if id.as_str().starts_with(&prefix) && candidates.contains(id.as_str()) {
                     Some(id.clone())
                 } else {
                     stripped.push(id.as_str().to_string());
                     None
                 }
             })
-            .collect()
-    };
-
-    cleaned.visual_ids = clean(&sel.visual_ids, "visual.");
-    cleaned.auditory_ids = clean(&sel.auditory_ids, "auditory.");
-    cleaned.olfactory_ids = clean(&sel.olfactory_ids, "olfactory.");
-    cleaned.tactile_ids = clean(&sel.tactile_ids, "tactile.");
-    cleaned.gustatory_ids = clean(&sel.gustatory_ids, "gustatory.");
-    cleaned.emotion_ids = clean(&sel.emotion_ids, "emotion.");
-    cleaned.gesture_ids = clean(&sel.gesture_ids, "gesture.");
-    cleaned.atmosphere_ids = clean(&sel.atmosphere_ids, "atmosphere.");
-
-    let all_empty = cleaned.visual_ids.is_empty()
-        && cleaned.auditory_ids.is_empty()
-        && cleaned.olfactory_ids.is_empty()
-        && cleaned.tactile_ids.is_empty()
-        && cleaned.gustatory_ids.is_empty()
-        && cleaned.emotion_ids.is_empty()
-        && cleaned.gesture_ids.is_empty()
-        && cleaned.atmosphere_ids.is_empty();
+            .collect();
+        if !kept.is_empty() {
+            all_empty = false;
+        }
+        *dst = kept;
+    }
 
     ValidationResult {
         cleaned,

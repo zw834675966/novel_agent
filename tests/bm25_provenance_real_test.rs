@@ -98,7 +98,10 @@ fn real_bm25_vs_dict_quantitative() {
         };
         eprintln!("{i:>2}.{mark} {} | {}", c.id, c.text);
     }
-    assert!(relevant >= 1, "BM25 should surface at least 1 relevant in top-24");
+    assert!(
+        relevant >= 1,
+        "BM25 should surface at least 1 relevant in top-24"
+    );
 }
 
 #[tokio::test]

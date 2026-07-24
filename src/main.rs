@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     let (sense_generator, prose_generator): (Arc<dyn SenseGenerator>, Arc<dyn ProseGenerator>) =
         match deepseek::Client::from_env() {
             Ok(client) => (
-                Arc::new(RigSenseGenerator::new(client.clone(), vocab.clone())),
+                Arc::new(RigSenseGenerator::new(client.clone())),
                 Arc::new(RigProseGenerator::new(client)),
             ),
             Err(_) => {
