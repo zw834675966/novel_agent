@@ -2,10 +2,74 @@ use crate::llm::{
     ContextTagRequest, DerivationRequest, LlmCharacterDerivation, LlmContextTagSelection,
     SenseGenerator,
 };
-use crate::models::StoryError;
+use crate::models::{Certainty, MemorySource, PlotDevelopmentKind, SensorySelection, StoryError};
 use rig::client::CompletionClient;
 use rig::extractor::Extractor;
 use rig::providers::deepseek;
+
+/// 推导器系统指令（通过 rig `.preamble()` 注入为 system message）
+const DERIVATION_PREAMBLE: &str = "\
+你是小说人物视角推导器。\n\
+你的任务：根据角色状态和场景事件，从候选词汇 ID 中为八个感官类别各选择合适的描写片段。\n\
+约束：\n\
+- 只能从候选词汇 ID 中选择，不得造词\n\
+- 每类感官选 0-3 个最贴合场景的词汇\n\
+- 依据角色性格、记忆和场景事件做选择\n\
+- 记忆应反映角色对场景的主观反应\n\
+- 剧情发展应自然承接已有线索";
+
+/// 标签选择器系统指令（通过 rig `.preamble()` 注入为 system message）
+const TAG_PREAMBLE: &str = "\
+你是小说场景上下文标签选择器。\n\
+你的任务：从可用标签中选择与本场景最相关的标签。\n\
+约束：\n\
+- 只能从可用标签列表中选择，不得造标签\n\
+- 选 3-8 个最相关的标签\n\
+- 依据角色性格、场景事件和已有剧情做选择";
+
+fn memory_source_zh(source: MemorySource) -> &'static str {
+    match source {
+        MemorySource::Witnessed => "亲眼所见",
+        MemorySource::Heard => "道听途说",
+        MemorySource::Inferred => "推断",
+    }
+}
+
+fn certainty_zh(certainty: Certainty) -> &'static str {
+    match certainty {
+        Certainty::Certain => "确定",
+        Certainty::Suspected => "可能",
+        Certainty::Uncertain => "不确定",
+    }
+}
+
+fn plot_kind_zh(kind: PlotDevelopmentKind) -> &'static str {
+    match kind {
+        PlotDevelopmentKind::SuspicionRaised => "产生怀疑",
+        PlotDevelopmentKind::ConflictEscalated => "冲突升级",
+        PlotDevelopmentKind::GoalChanged => "目标改变",
+        PlotDevelopmentKind::RelationshipShifted => "关系变化",
+        PlotDevelopmentKind::NewClue => "新线索",
+    }
+}
+
+/// 将上一场景感官选择格式化为可读摘要，如 "visual: visual.bloodstain; auditory: auditory.footsteps"。
+fn format_last_sensation(s: &SensorySelection) -> String {
+    let parts: Vec<String> = s
+        .sense_fields()
+        .into_iter()
+        .filter(|(_, ids)| !ids.is_empty())
+        .map(|(sense, ids)| {
+            let ids_str = ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{sense}: {ids_str}")
+        })
+        .collect();
+    parts.join("; ")
+}
 
 /// rig（DeepSeek）生产实现
 /// ============================
@@ -29,10 +93,12 @@ impl RigSenseGenerator {
     pub fn new(client: deepseek::Client) -> Self {
         let tag_extractor = client
             .extractor::<LlmContextTagSelection>(deepseek::DEEPSEEK_V4_FLASH)
+            .preamble(TAG_PREAMBLE)
             .retries(1)
             .build();
         let derivation_extractor = client
             .extractor::<LlmCharacterDerivation>(deepseek::DEEPSEEK_V4_FLASH)
+            .preamble(DERIVATION_PREAMBLE)
             .retries(1)
             .build();
         Self {
@@ -52,10 +118,11 @@ impl RigSenseGenerator {
     /// 约束：LLM 只能从候选词汇 ID 中选择，不得自行造词。
     fn build_derivation_prompt(req: &DerivationRequest) -> String {
         let mut s = String::new();
-        s.push_str("你是小说人物视角推导器。只从候选词汇 ID 中选择，不得造词。\n\n");
         s.push_str(&format!(
-            "人物: {} | 性格: {:?} | 技能: {:?}\n",
-            req.character.name, req.character.personality, req.character.skills
+            "人物: {} | 性格: {} | 技能: {}\n",
+            req.character.name,
+            req.character.personality.join("、"),
+            req.character.skills.join("、")
         ));
         s.push_str(&format!("客观事件: {}\n", req.scene.objective_event));
         Self::append_prior_plots(&mut s, &req.prior_plot_developments);
@@ -63,13 +130,18 @@ impl RigSenseGenerator {
             s.push_str("该人物已知记忆:\n");
             for m in req.recent_memories.iter().rev() {
                 s.push_str(&format!(
-                    "- [{:?}/{:?}] {}\n",
-                    m.source, m.certainty, m.content
+                    "- [{}/{}] {}\n",
+                    memory_source_zh(m.source),
+                    certainty_zh(m.certainty),
+                    m.content
                 ));
             }
         }
         if let Some(last) = &req.last_sensation {
-            s.push_str(&format!("上一场景感官: {:?}\n", last));
+            let summary = format_last_sensation(last);
+            if !summary.is_empty() {
+                s.push_str(&format!("上一场景感官: {}\n", summary));
+            }
         }
         let mut candidates: Vec<_> = req.candidates.iter().collect();
         candidates.sort_by(|left, right| left.id.cmp(&right.id));
@@ -85,7 +157,10 @@ impl RigSenseGenerator {
                 tags.join(", ")
             ));
         }
-        s.push_str("\n请调用 submit 提交结构化结果。sensations 各字段只能包含候选 ID。");
+        s.push_str("\n示例（仅供参考格式）:\n");
+        s.push_str("- 视觉: visual.bloodstain, visual.moonlight\n");
+        s.push_str("- 听觉: auditory.footsteps\n");
+        s.push_str("- 记忆: 角色注意到地上的血迹，想起之前的冲突\n");
         s
     }
 
@@ -95,18 +170,18 @@ impl RigSenseGenerator {
         available_tags.dedup();
 
         let mut s = String::new();
-        s.push_str("你为小说人物选择本场景相关上下文标签。只能提交给定标签，不能造标签。\n\n");
         s.push_str(&format!(
-            "人物: {} | 性格: {:?} | 技能: {:?}\n",
-            req.character.name, req.character.personality, req.character.skills
+            "人物: {} | 性格: {} | 技能: {}\n",
+            req.character.name,
+            req.character.personality.join("、"),
+            req.character.skills.join("、")
         ));
         s.push_str(&format!("客观事件: {}\n", req.scene.objective_event));
         Self::append_prior_plots(&mut s, &req.prior_plot_developments);
         s.push_str(&format!(
-            "可用标签（只能从此列表选择）: {:?}\n",
-            available_tags
+            "可用标签（只能从此列表选择）: {}\n",
+            available_tags.join(", ")
         ));
-        s.push_str("请调用 submit 提交结构化结果，tags 只能包含可用标签中的值。");
         s
     }
 
@@ -118,8 +193,9 @@ impl RigSenseGenerator {
         s.push_str("此前剧情发展:\n");
         for plot in plots.iter().rev() {
             s.push_str(&format!(
-                "- kind: {:?} | reason: {}\n",
-                plot.development.kind, plot.development.reason
+                "- kind: {} | reason: {}\n",
+                plot_kind_zh(plot.development.kind),
+                plot.development.reason
             ));
         }
     }
