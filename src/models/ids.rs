@@ -6,16 +6,27 @@ use uuid::Uuid;
 /// ==========================
 /// 类型安全的角色标识，避免与 SceneId/MemoryId 混淆。
 /// 派生 Copy 以支持在集合中按值传递。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// 业务上用于主键和外键绑定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct CharacterId(pub Uuid);
 
 /// 场景 ID（UUID newtype）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// 对应场景发生的时间点与参与者聚合，避免与角色/记忆 ID 混淆。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct SceneId(pub Uuid);
 
 /// 记忆 ID（UUID newtype）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// 用于 character_memories 主键，避免与其他实体 ID 混淆。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryId(pub Uuid);
+
+/// 关系事实 ID（UUID newtype）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct RelationshipFactId(pub Uuid);
+
+/// 关系候选 ID（UUID newtype）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct RelationshipCandidateId(pub Uuid);
 
 /// 词汇 ID（字符串 newtype）
 /// =============================

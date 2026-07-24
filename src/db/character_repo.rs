@@ -143,4 +143,44 @@ impl CharacterRepo {
             .await?;
         Ok(row.is_some())
     }
+
+    /// 列出全部角色（按 name, id 排序）
+    pub async fn list(&self) -> Result<Vec<Character>, StoryError> {
+        let rows = sqlx::query("SELECT id, name FROM characters ORDER BY name, id")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut out = Vec::new();
+        for row in rows {
+            let id_str: String = sqlx::Row::try_get(&row, "id")?;
+            let name: String = sqlx::Row::try_get(&row, "name")?;
+            let id = CharacterId(
+                uuid::Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?,
+            );
+            let personality: Vec<String> = sqlx::query(
+                "SELECT tag FROM character_personality_tags WHERE character_id = ? ORDER BY tag",
+            )
+            .bind(id.0.to_string())
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|r| sqlx::Row::try_get::<String, _>(r, "tag"))
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+            let skills: Vec<String> = sqlx::query(
+                "SELECT skill FROM character_skills WHERE character_id = ? ORDER BY skill",
+            )
+            .bind(id.0.to_string())
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|r| sqlx::Row::try_get::<String, _>(r, "skill"))
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+            out.push(Character {
+                id,
+                name,
+                personality,
+                skills,
+            });
+        }
+        Ok(out)
+    }
 }

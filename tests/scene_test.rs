@@ -11,7 +11,7 @@ use novels::llm::{
     MockSenseGenerator, SenseGenerator,
 };
 use novels::models::*;
-use novels::prose::MockProseGenerator;
+use novels::prose::{MockProseGenerator, MockScenePlanner};
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
 use std::collections::VecDeque;
@@ -132,6 +132,7 @@ impl SenseGenerator for RecordingGenerator {
 
 fn canned_derivation() -> LlmCharacterDerivation {
     LlmCharacterDerivation {
+        sensory_analysis: String::new(),
         sensations: SensorySelection {
             visual_ids: vec![VocabularyId::new("visual.x").unwrap()],
             ..Default::default()
@@ -142,6 +143,7 @@ fn canned_derivation() -> LlmCharacterDerivation {
             certainty: Certainty::Certain,
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     }
 }
 
@@ -160,6 +162,7 @@ async fn derive_character_persists_and_returns() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
 
     let cid = CharacterId(uuid::Uuid::new_v4());
@@ -177,7 +180,7 @@ async fn derive_character_persists_and_returns() {
     assert_eq!(d.scene_id, sid);
     let mems = db.memories().list(cid, 50).await.unwrap();
     assert_eq!(mems.len(), 1);
-    assert_eq!(mems[0].content, "witnessed");
+    assert_eq!(mems[0].content.render(), "witnessed");
     let latest = db.sensations().latest(cid).await.unwrap();
     assert!(latest.is_some());
 }
@@ -196,6 +199,7 @@ async fn derive_character_rejects_non_participant() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
@@ -225,6 +229,7 @@ async fn derive_scene_returns_partial_on_one_failure() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let s = SceneId(uuid::Uuid::new_v4());
     db.characters().create(c1, "A", &[], &[]).await.unwrap();
@@ -252,6 +257,7 @@ async fn retry_persists_complete_second_response() {
     let db = Db::open_in_memory().await.unwrap();
     let vocab = Vocab::load_from_str("visual:\n  x:\n    text: x\n    tags: []\n").unwrap();
     let first = LlmCharacterDerivation {
+        sensory_analysis: String::new(),
         sensations: SensorySelection {
             auditory_ids: vec![VocabularyId::new("auditory.x").unwrap()],
             ..Default::default()
@@ -265,8 +271,10 @@ async fn retry_persists_complete_second_response() {
             kind: PlotDevelopmentKind::SuspicionRaised,
             reason: "first plot".into(),
         }],
+        relationship_candidates: vec![],
     };
     let second = LlmCharacterDerivation {
+        sensory_analysis: String::new(),
         sensations: SensorySelection {
             visual_ids: vec![VocabularyId::new("visual.x").unwrap()],
             ..Default::default()
@@ -280,6 +288,7 @@ async fn retry_persists_complete_second_response() {
             kind: PlotDevelopmentKind::NewClue,
             reason: "second plot".into(),
         }],
+        relationship_candidates: vec![],
     };
     let generator = Arc::new(SequenceGenerator::new(vec![first, second]));
     let svc = StoryService::new(
@@ -287,6 +296,7 @@ async fn retry_persists_complete_second_response() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
@@ -298,14 +308,14 @@ async fn retry_persists_complete_second_response() {
 
     let result = svc.derive_character(sid, cid).await.unwrap();
     assert_eq!(result.sensations.visual_ids[0].as_str(), "visual.x");
-    assert_eq!(result.new_memory.content, "second memory");
+    assert_eq!(result.new_memory.content.render(), "second memory");
     assert_eq!(result.new_memory.source, MemorySource::Inferred);
     assert_eq!(result.new_memory.certainty, Certainty::Suspected);
-    assert_eq!(result.plot_development[0].reason, "second plot");
+    assert_eq!(result.plot_development[0].reason.render(), "second plot");
 
     let memories = db.memories().list(cid, 50).await.unwrap();
     assert_eq!(memories.len(), 1);
-    assert_eq!(memories[0].content, "second memory");
+    assert_eq!(memories[0].content.render(), "second memory");
     assert_eq!(memories[0].source, MemorySource::Inferred);
     assert_eq!(memories[0].certainty, Certainty::Suspected);
     let latest = db.sensations().latest(cid).await.unwrap().unwrap();
@@ -317,6 +327,7 @@ async fn retry_rejects_two_invalid_responses_without_persisting() {
     let db = Db::open_in_memory().await.unwrap();
     let vocab = Vocab::load_from_str("visual:\n  x:\n    text: x\n    tags: []\n").unwrap();
     let invalid = || LlmCharacterDerivation {
+        sensory_analysis: String::new(),
         sensations: SensorySelection {
             auditory_ids: vec![VocabularyId::new("auditory.x").unwrap()],
             ..Default::default()
@@ -327,6 +338,7 @@ async fn retry_rejects_two_invalid_responses_without_persisting() {
             certainty: Certainty::Certain,
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     };
     let generator = Arc::new(SequenceGenerator::new(vec![invalid(), invalid()]));
     let svc = StoryService::new(
@@ -334,6 +346,7 @@ async fn retry_rejects_two_invalid_responses_without_persisting() {
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let cid = CharacterId(uuid::Uuid::new_v4());
     let sid = SceneId(uuid::Uuid::new_v4());
@@ -360,6 +373,7 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
     let vocab = Vocab::load_from_str(yaml).unwrap();
 
     let derivation = LlmCharacterDerivation {
+        sensory_analysis: String::new(),
         sensations: SensorySelection {
             visual_ids: vec![VocabularyId::new("visual.bloodstain").unwrap()],
             ..Default::default()
@@ -370,6 +384,7 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
             certainty: Certainty::Certain,
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     };
     let tag_selection = LlmContextTagSelection {
         tags: vec!["injury".into()],
@@ -380,6 +395,7 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
         vocab,
         generator.clone(),
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
 
     let cid = CharacterId(uuid::Uuid::new_v4());
@@ -422,6 +438,7 @@ async fn derivation_passes_semantic_vocabulary_candidates() {
 
 fn derivation(memory: &str, plot: &str) -> LlmCharacterDerivation {
     LlmCharacterDerivation {
+        sensory_analysis: String::new(),
         sensations: SensorySelection {
             visual_ids: vec![VocabularyId::new("visual.bloodstain").unwrap()],
             ..Default::default()
@@ -435,6 +452,7 @@ fn derivation(memory: &str, plot: &str) -> LlmCharacterDerivation {
             kind: PlotDevelopmentKind::NewClue,
             reason: plot.into(),
         }],
+        relationship_candidates: vec![],
     }
 }
 
@@ -460,6 +478,7 @@ async fn narrative_service_fixture(
         vocab,
         generator.clone(),
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
     let cid = CharacterId(uuid::Uuid::new_v4());
     db.characters().create(cid, "A", &[], &[]).await.unwrap();
@@ -503,11 +522,16 @@ async fn derive_character_uses_earlier_plot_and_replaces_same_scene() {
 
     let requests = generator.derivation_requests().await;
     assert_eq!(
-        requests[1].prior_plot_developments[0].development.reason,
+        requests[1].prior_plot_developments[0]
+            .development
+            .reason
+            .render(),
         "early plot"
     );
     assert_eq!(
-        db.memories().list(cid, 50).await.unwrap()[0].content,
+        db.memories().list(cid, 50).await.unwrap()[0]
+            .content
+            .render(),
         "second later"
     );
 }
@@ -555,7 +579,9 @@ async fn later_derivation_never_receives_future_scene_context() {
     assert!(request.last_sensation.is_none());
     assert!(request.prior_plot_developments.is_empty());
     assert_eq!(
-        db.memories().list(cid, 50).await.unwrap()[0].content,
+        db.memories().list(cid, 50).await.unwrap()[0]
+            .content
+            .render(),
         "early memory"
     );
 }

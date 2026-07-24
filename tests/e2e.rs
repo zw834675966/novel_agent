@@ -9,7 +9,7 @@
 use novels::db::Db;
 use novels::llm::{LlmCharacterDerivation, LlmContextTagSelection, MockSenseGenerator};
 use novels::models::*;
-use novels::prose::MockProseGenerator;
+use novels::prose::{MockProseGenerator, MockScenePlanner};
 use novels::scene::StoryService;
 use novels::vocab::Vocab;
 use std::sync::Arc;
@@ -20,6 +20,7 @@ async fn end_to_end_with_mock() {
     let yaml = std::include_str!("../assets/vocab.yaml");
     let vocab = Vocab::load_from_str(yaml).unwrap();
     let canned = LlmCharacterDerivation {
+        sensory_analysis: "分析场景中的视觉焦点".into(),
         sensations: SensorySelection {
             visual_ids: vec![VocabularyId::new("visual.bloodstain").unwrap()],
             ..Default::default()
@@ -30,16 +31,18 @@ async fn end_to_end_with_mock() {
             certainty: Certainty::Certain,
         },
         plot_development: vec![],
+        relationship_candidates: vec![],
     };
     let generator = Arc::new(MockSenseGenerator::new(
         LlmContextTagSelection::default(),
-        canned,
+        canned.clone(),
     ));
     let svc = StoryService::new(
         db.clone(),
         vocab,
         generator,
         Arc::new(MockProseGenerator::fallback()),
+        Arc::new(MockScenePlanner::fallback()),
     );
 
     let cid = CharacterId(uuid::Uuid::new_v4());
@@ -61,5 +64,10 @@ async fn end_to_end_with_mock() {
     assert!(results[0].is_ok());
     let d = results[0].as_ref().unwrap();
     assert_eq!(d.character_id, cid);
-    assert_eq!(d.new_memory.content, "saw it");
+    assert_eq!(d.new_memory.content.render(), "saw it");
+
+    // Task 4: sensory_analysis CoT field deserializes from mock
+    let serialized = serde_json::to_string(&canned).unwrap();
+    let back: LlmCharacterDerivation = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(back.sensory_analysis, "分析场景中的视觉焦点");
 }

@@ -5,19 +5,208 @@ visual:
   candlelight:
     text: "烛光"
     tags: ["indoor", "night"]
+  moonlight:
+    text: "月色"
+    tags: ["night", "outdoor"]
+  shadow:
+    text: "阴影"
+    tags: ["indoor", "night"]
+  palanquin:
+    text: "轿子"
+    tags: ["outdoor", "transport"]
+  lantern:
+    text: "灯笼"
+    tags: ["night", "indoor"]
+  smoke:
+    text: "烟雾"
+    tags: ["indoor", "fire"]
+  tears:
+    text: "泪痕"
+    tags: ["emotion", "face"]
+  pale_face:
+    text: "面色苍白"
+    tags: ["face", "fear"]
+  red_eyes:
+    text: "眼圈通红"
+    tags: ["face", "emotion"]
+  sword:
+    text: "寒光闪烁的剑"
+    tags: ["weapon", "danger"]
+  blood_pool:
+    text: "一滩血"
+    tags: ["injury", "crime"]
+  broken_porcelain:
+    text: "碎瓷片"
+    tags: ["indoor", "conflict"]
+  silk_curtain:
+    text: "绸缎帘子"
+    tags: ["indoor", "wealth"]
+  jade_pendant:
+    text: "玉佩"
+    tags: ["jewelry", "wealth"]
+  calligraphy:
+    text: "字画"
+    tags: ["indoor", "culture"]
+  bronze_mirror:
+    text: "铜镜"
+    tags: ["indoor", "daily"]
+  withered_flower:
+    text: "枯花"
+    tags: ["decay", "garden"]
+  snow:
+    text: "白雪"
+    tags: ["weather", "winter"]
+  rain:
+    text: "雨幕"
+    tags: ["weather", "outdoor"]
 auditory:
   footsteps:
     text: "脚步声"
     tags: ["movement", "tension"]
+  whisper:
+    text: "低语声"
+    tags: ["speech", "indoor"]
+  wind:
+    text: "风声"
+    tags: ["weather", "outdoor"]
+  rain_sound:
+    text: "雨打窗棂"
+    tags: ["weather", "indoor"]
+  bell:
+    text: "铃声"
+    tags: ["indoor", "signal"]
+  crying:
+    text: "哭泣声"
+    tags: ["emotion", "speech"]
+  laughter:
+    text: "笑声"
+    tags: ["emotion", "speech"]
+  door_creak:
+    text: "门轴吱呀"
+    tags: ["indoor", "movement"]
+  porcelain_break:
+    text: "瓷器碎裂声"
+    tags: ["conflict", "indoor"]
+  sword_clash:
+    text: "刀剑相击"
+    tags: ["weapon", "danger"]
+  sigh:
+    text: "叹息声"
+    tags: ["emotion", "speech"]
+  zither:
+    text: "琴声"
+    tags: ["music", "culture"]
+  bird_call:
+    text: "鸟鸣"
+    tags: ["outdoor", "garden"]
+  water_drip:
+    text: "滴水声"
+    tags: ["indoor", "night"]
+  distant_shout:
+    text: "远处喊声"
+    tags: ["outdoor", "tension"]
 olfactory:
   blood:
     text: "血腥味"
     tags: ["injury", "crime"]
+  incense:
+    text: "檀香"
+    tags: ["indoor", "ritual"]
+  medicine:
+    text: "药味"
+    tags: ["illness", "indoor"]
+  perfume:
+    text: "脂粉香"
+    tags: ["indoor", "daily"]
+  flower_scent:
+    text: "花香"
+    tags: ["garden", "outdoor"]
+  mold:
+    text: "霉味"
+    tags: ["decay", "indoor"]
+  smoke_smell:
+    text: "烟味"
+    tags: ["fire", "indoor"]
+  wine:
+    text: "酒气"
+    tags: ["drink", "indoor"]
+  sweat:
+    text: "汗味"
+    tags: ["body", "tension"]
+  earth:
+    text: "泥土气息"
+    tags: ["outdoor", "weather"]
+  tea:
+    text: "茶香"
+    tags: ["drink", "indoor"]
+  damp:
+    text: "潮湿气味"
+    tags: ["weather", "indoor"]
 tactile:
   cold:
     text: "冰凉"
     tags: ["weather", "fear"]
+  cold_hand:
+    text: "冰凉的手"
+    tags: ["body", "night"]
+  warm_breath:
+    text: "温热的气息"
+    tags: ["body", "emotion"]
+  rough_hands:
+    text: "粗糙的手"
+    tags: ["body", "labor"]
+  silk:
+    text: "丝绸触感"
+    tags: ["texture", "wealth"]
+  cold_floor:
+    text: "冰冷的地砖"
+    tags: ["indoor", "weather"]
+  trembling:
+    text: "颤抖"
+    tags: ["body", "fear"]
+  wet_clothes:
+    text: "湿衣贴身"
+    tags: ["weather", "body"]
+  sharp_edge:
+    text: "锋利的刃口"
+    tags: ["weapon", "danger"]
+  warm_tears:
+    text: "温热的泪"
+    tags: ["emotion", "face"]
+  cold_wind:
+    text: "寒风刺骨"
+    tags: ["weather", "outdoor"]
+  soft_pillow:
+    text: "柔软的枕头"
+    tags: ["indoor", "daily"]
 gustatory:
   bitter:
     text: "苦涩"
     tags: ["emotion", "taste"]
+  metallic:
+    text: "铁锈味"
+    tags: ["blood", "injury"]
+  sweet:
+    text: "甘甜"
+    tags: ["taste", "emotion"]
+  sour:
+    text: "酸涩"
+    tags: ["taste", "emotion"]
+  salty_tears:
+    text: "咸涩的泪"
+    tags: ["emotion", "face"]
+  medicine_taste:
+    text: "药苦"
+    tags: ["illness", "taste"]
+  wine_taste:
+    text: "酒味辛辣"
+    tags: ["drink", "taste"]
+  blood_taste:
+    text: "血腥味"
+    tags: ["injury", "blood"]
+  tea_taste:
+    text: "茶涩"
+    tags: ["drink", "taste"]
+  bland:
+    text: "寡淡无味"
+    tags: ["taste", "emotion"]

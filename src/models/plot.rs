@@ -1,4 +1,4 @@
-use crate::models::{CharacterId, SceneId};
+use crate::models::{CharacterId, PlotReasonSlot, SceneId};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,13 +17,14 @@ pub enum PlotDevelopmentKind {
     NewClue,             // 获得新线索
 }
 
-/// 剧情发展（含原因）
-/// ====================
-/// LLM 不仅要标记发展类型，还要给出简短的文本理由。
+/// 剧情发展（含结构化原因 N4）
+/// =================================
+/// 原因使用 `PlotReasonSlot` 枚举槽，禁止 LLM 生成开放抒情或因果套话。
+/// 平台 P1 信号治理：消除 AI 因果说明文风格输出。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PlotDevelopment {
     pub kind: PlotDevelopmentKind, // 发展类型
-    pub reason: String,            // 原因描述（LLM 生成的文本）
+    pub reason: PlotReasonSlot,    // 结构化原因短槽（N4: 防AI套话）
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

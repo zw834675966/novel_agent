@@ -3,7 +3,9 @@
 
 #[test]
 fn original_material_fill_research_deliverable_has_required_sections() {
-    let path = std::path::Path::new("docs/superpowers/specs/2026-07-22-original-material-fill-research.md");
+    let path = std::path::Path::new(
+        "docs/superpowers/specs/2026-07-22-original-material-fill-research.md",
+    );
     assert!(
         path.is_file(),
         "missing research deliverable at {}",
@@ -54,13 +56,7 @@ fn original_material_fill_research_deliverable_has_required_sections() {
     }
 
     // Gap table must call out aligned vs gap behaviors
-    for needle in [
-        "已对齐",
-        "缺口",
-        "字典序",
-        "action",
-        "substring",
-    ] {
+    for needle in ["已对齐", "缺口", "字典序", "action", "substring"] {
         assert!(
             body.contains(needle),
             "research deliverable missing gap-table signal: {needle}"

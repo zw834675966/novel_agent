@@ -17,12 +17,20 @@ mod assembly; // 按 ID 拉取片段 + 按类别拼装正文 + ref 校验
 mod contract; // LlmNarrative / NarrativeBeat(JsonSchema)
 mod generator; // ProseGenerator trait + NarrateRequest + 候选类型
 mod mock; // 测试用 mock
+mod plan_contract; // LlmScenePlan / StoryOutline / SceneCard / CameraBeat(JsonSchema)
+mod planner; // ScenePlanner trait + PlanRequest
+mod planner_mock; // 测试用 mock 场景规划器
+mod planner_rig; // rig(DeepSeek)生产场景规划器
 mod rig_impl; // rig(DeepSeek)生产实现
 
-pub use assembly::AssembledProse;
+pub use assembly::{AssembledProse, MIN_QUOTE_DENSITY, ProseQualityReport};
 pub use contract::{LlmNarrative, NarrativeBeat};
 pub use generator::{CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator};
 pub use mock::MockProseGenerator;
+pub use plan_contract::{CameraBeat, LlmScenePlan, OutlineAct, SceneCard, StoryOutline};
+pub use planner::{PlanRequest, ScenePlanner};
+pub use planner_mock::MockScenePlanner;
+pub use planner_rig::RigScenePlanner;
 pub use rig_impl::RigProseGenerator;
 
 // crate 私有重导出:供 StoryService 跨模块调用,不对外暴露

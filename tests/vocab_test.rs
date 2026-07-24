@@ -121,6 +121,64 @@ emotion:
 }
 
 #[test]
+fn bm25_ranks_repeated_term_higher() {
+    // TF weight: same term twice in text should beat once (no voice-tag confound).
+    let yaml = r#"
+visual:
+  once: { text: "雨夜独坐", tags: ["t"] }
+  twice: { text: "雨夜又见雨夜", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &["雨夜".into()], 2, 2);
+    assert_eq!(ranked[0].id, "visual.twice");
+}
+
+#[test]
+fn bm25_rare_term_beats_common_term() {
+    // IDF: rare term 「紫菱洲」 beats frequent 「宝玉」 when both are in the query.
+    let yaml = r#"
+visual:
+  rare_hit: { text: "紫菱洲边", tags: ["t"] }
+  common_hit: { text: "宝玉", tags: ["t"] }
+  filler_a: { text: "宝玉走了", tags: ["t"] }
+  filler_b: { text: "宝玉来了", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked =
+        v.candidates_ranked_limited(&["t".into()], &["紫菱洲".into(), "宝玉".into()], 4, 4);
+    assert_eq!(ranked[0].id, "visual.rare_hit");
+}
+
+#[test]
+fn bm25_empty_query_falls_back_to_stable_order() {
+    let yaml = r#"
+visual:
+  z: { text: "z", tags: ["t"] }
+  a: { text: "a", tags: ["t"] }
+emotion:
+  m: { text: "m", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &[], 2, 3);
+    let ids: Vec<_> = ranked.iter().map(|c| c.id.as_str()).collect();
+    // Empty query → BM25=0, equal selected boost → SENSES then id: visual.a, visual.z, emotion.m
+    assert_eq!(ids, vec!["visual.a", "visual.z", "emotion.m"]);
+}
+
+#[test]
+fn bm25_preserves_voice_isolation() {
+    // Exact name tag must still beat a BM25-only text hit for a different character.
+    let yaml = r#"
+gesture:
+  other: { text: "宝玉宝玉宝玉", tags: ["t", "贾琏"] }
+  self: { text: "点头", tags: ["t", "宝玉"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &["宝玉".into()], 2, 2);
+    assert_eq!(ranked[0].id, "gesture.self");
+}
+
+#[test]
 fn candidates_for_tags_fall_back_when_tags_have_no_entry_match() {
     let v = Vocab::load_from_str(sample_yaml()).unwrap();
     let candidates = v.candidates_for_tags(&["known-but-unmatched".to_string()]);
@@ -256,4 +314,170 @@ fn load_runtime_vocab_merges_base_and_distilled_fixture() {
     assert!(v.has("visual", "bloodstain")); // base
     assert!(v.has("emotion", "hlm-c001-01") || report.distilled_files >= 1);
     assert!(report.total_entries > report.base_entries);
+}
+
+#[test]
+fn quota_gives_weak_sense_floor_under_tilted_pool() {
+    // Tilted pool: 20 gesture + 20 emotion entries dominate, but weak senses
+    // (auditory/olfactory/tactile/gustatory) have only 3 entries each.
+    // Quota retrieval must still give each weak sense at least min(5, 3) = 3.
+    let mut yaml = String::new();
+    yaml.push_str("gesture:\n");
+    for i in 0..20 {
+        yaml.push_str(&format!("  g{i}: {{ text: \"g{i}\", tags: [\"t\"] }}\n"));
+    }
+    yaml.push_str("emotion:\n");
+    for i in 0..20 {
+        yaml.push_str(&format!("  e{i}: {{ text: \"e{i}\", tags: [\"t\"] }}\n"));
+    }
+    // Weak senses: only 3 each
+    for sense in &["auditory", "olfactory", "tactile", "gustatory"] {
+        yaml.push_str(&format!("{sense}:\n"));
+        for i in 0..3 {
+            yaml.push_str(&format!("  w{i}: {{ text: \"w{i}\", tags: [\"t\"] }}\n"));
+        }
+    }
+    let v = Vocab::load_from_str(&yaml).unwrap();
+
+    let ranked = v.candidates_ranked_limited_with_quotas(
+        &["t".into()],
+        &[],
+        novels::vocab::DEFAULT_PER_SENSE_CAP,
+        novels::vocab::DEFAULT_TOTAL_CAP,
+    );
+
+    // Each weak sense gets all 3 available (floor = min(5, 3) = 3).
+    for sense in &["auditory", "olfactory", "tactile", "gustatory"] {
+        let count = ranked.iter().filter(|c| c.sense == *sense).count();
+        assert_eq!(count, 3, "weak sense {sense} should get floor of 3");
+    }
+
+    // gesture/emotion capped at 15 each.
+    assert_eq!(ranked.iter().filter(|c| c.sense == "gesture").count(), 15);
+    assert_eq!(ranked.iter().filter(|c| c.sense == "emotion").count(), 15);
+
+    // Total <= 96.
+    assert!(ranked.len() <= 96);
+}
+
+#[test]
+fn quota_gives_weak_sense_floor_5_when_available() {
+    // Enough weak sense entries: floor should be 5 each.
+    let mut yaml = String::new();
+    yaml.push_str("gesture:\n");
+    for i in 0..10 {
+        yaml.push_str(&format!("  g{i}: {{ text: \"g{i}\", tags: [\"t\"] }}\n"));
+    }
+    for sense in &["auditory", "olfactory", "tactile", "gustatory"] {
+        yaml.push_str(&format!("{sense}:\n"));
+        for i in 0..8 {
+            yaml.push_str(&format!("  w{i}: {{ text: \"w{i}\", tags: [\"t\"] }}\n"));
+        }
+    }
+    let v = Vocab::load_from_str(&yaml).unwrap();
+
+    let ranked = v.candidates_ranked_limited_with_quotas(
+        &["t".into()],
+        &[],
+        novels::vocab::DEFAULT_PER_SENSE_CAP,
+        novels::vocab::DEFAULT_TOTAL_CAP,
+    );
+
+    for sense in &["auditory", "olfactory", "tactile", "gustatory"] {
+        let count = ranked.iter().filter(|c| c.sense == *sense).count();
+        assert!(
+            count >= 5,
+            "weak sense {sense} should get at least floor of 5, got {count}"
+        );
+    }
+}
+
+#[test]
+fn quota_sense_focus_boosts_relevant_senses() {
+    // Query "血" should boost visual/olfactory scores.
+    let yaml = r#"
+visual:
+  blood: { text: "血迹", tags: ["t"] }
+  noise: { text: "无关", tags: ["t"] }
+olfactory:
+  bloodsmell: { text: "血腥味", tags: ["t"] }
+gesture:
+  g1: { text: "摇头", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited_with_quotas(&["t".into()], &["血".into()], 24, 96);
+    // visual.blood and olfactory.bloodsmell should rank above visual.noise and gesture.g1
+    let ids: Vec<_> = ranked.iter().map(|c| c.id.as_str()).collect();
+    assert!(
+        ids.iter().position(|&id| id == "visual.blood").unwrap()
+            < ids.iter().position(|&id| id == "visual.noise").unwrap()
+    );
+    assert!(
+        ids.iter()
+            .position(|&id| id == "olfactory.bloodsmell")
+            .unwrap()
+            < ids.iter().position(|&id| id == "gesture.g1").unwrap()
+    );
+}
+
+#[test]
+fn focus_map_rain_keyword_boosts_rain_senses() {
+    // Query "雨" should boost visual/auditory/tactile (expanded FOCUS_MAP entries).
+    let yaml = r#"
+visual:
+  raindrop: { text: "雨丝", tags: ["t"] }
+  noise: { text: "无关", tags: ["t"] }
+auditory:
+  rainsound: { text: "雨声", tags: ["t"] }
+tactile:
+  wet: { text: "湿冷", tags: ["t"] }
+gesture:
+  g1: { text: "摇头", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited_with_quotas(&["t".into()], &["雨".into()], 24, 96);
+    let ids: Vec<_> = ranked.iter().map(|c| c.id.as_str()).collect();
+    // All rain-sense hits must rank above the unrelated visual.noise and gesture.g1.
+    assert!(
+        ids.iter().position(|&id| id == "visual.raindrop").unwrap()
+            < ids.iter().position(|&id| id == "visual.noise").unwrap()
+    );
+    assert!(
+        ids.iter()
+            .position(|&id| id == "auditory.rainsound")
+            .unwrap()
+            < ids.iter().position(|&id| id == "gesture.g1").unwrap()
+    );
+    assert!(
+        ids.iter().position(|&id| id == "tactile.wet").unwrap()
+            < ids.iter().position(|&id| id == "gesture.g1").unwrap()
+    );
+}
+
+#[test]
+fn quota_total_never_exceeds_cap() {
+    let mut yaml = String::new();
+    for sense in &[
+        "visual",
+        "auditory",
+        "olfactory",
+        "tactile",
+        "gustatory",
+        "emotion",
+        "gesture",
+        "atmosphere",
+    ] {
+        yaml.push_str(&format!("{sense}:\n"));
+        for i in 0..20 {
+            yaml.push_str(&format!("  k{i}: {{ text: \"k{i}\", tags: [\"t\"] }}\n"));
+        }
+    }
+    let v = Vocab::load_from_str(&yaml).unwrap();
+    let ranked = v.candidates_ranked_limited_with_quotas(
+        &["t".into()],
+        &[],
+        novels::vocab::DEFAULT_PER_SENSE_CAP,
+        96,
+    );
+    assert!(ranked.len() <= 96);
 }

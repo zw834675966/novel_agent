@@ -7,9 +7,13 @@
 //   llm     →  LLM 推理抽象（trait + rig 实现 + mock）
 //   scene   →  业务编排（StoryService, 串联 LLM 推导与存储）
 
+pub mod api; // HTTP API 层：Axum 路由、DTO、输入校验和错误映射
+pub mod bootstrap; // 共享启动：Db + 词库 + 生成器 -> AppRuntime（CLI 与 main 复用）
+pub mod cli; // CLI 层：clap 参数树（子命令 + REPL 入口）
 pub mod db; // 数据库层：SQLite 连接管理 + 各实体的 Repository
 pub mod llm; // LLM 层：感官/记忆/情节推导的 trait 抽象与实现
 pub mod models; // 数据模型层：领域类型、ID、错误枚举
+pub mod prompt; // 提示词工程层：提示词拆分模版、蒸馏素材投喂与确定性封装
 pub mod prose; // 叙事生成层：结构化推导 -> 正文(LLM 编主线 + 原著片段拉取)
 pub mod scene; // 业务服务层：场景创建、角色推导、场景批量推导
 pub mod text_guard; // 自由文本护栏：因果套话剥离 + 长度硬顶

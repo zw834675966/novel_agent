@@ -31,6 +31,7 @@ pub struct DerivationRequest {
     pub last_sensation: Option<SensorySelection>, // 上一场景的五感（用于连续性）
     pub candidates: Vec<VocabularyCandidate>,
     pub prior_plot_developments: Vec<StoredPlotDevelopment>,
+    pub scene_participants: Vec<Character>, // 场景全部参与者（供关系候选参照）
 }
 
 /// 感官生成器抽象（Trait）

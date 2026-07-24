@@ -1,116 +1,152 @@
-# Task 3 Report: Deepen StoryService Around Narration
+# Task 3 Report: Assemble preserves sensation_refs order (kill sense sort)
 
-## Status
-COMPLETE.
+## Status: DONE
+
+## What was implemented
+
+Removed the fixed 8-category sense sort from `assemble_beat_descriptions` in
+`src/prose/assembly.rs`. Legal quotes are now joined in **input `refs`
+encounter order** (camera-beat order) instead of being re-collaged as
+atmosphere -> visual -> auditory -> olfactory -> tactile -> gustatory ->
+emotion -> gesture. This is the core Phase 1 fix for coherent shot ordering.
+
+### Core change
+
+In `assemble_beat_descriptions`, the `by_cat` HashMap + fixed `order` iteration
+was replaced with a single direct iteration over `resolved`:
+
+```rust
+// Preserve ref input order (camera-beat order); do NOT sort by sense category.
+// `resolved` is already in ref-encounter order, and the source-isolation
+// `retain` above is stable, so relative order survives.
+let parts: Vec<String> = resolved.iter().map(|q| q.text.clone()).collect();
+let quotes = parts.clone();
+let desc = join_quotes_with_rhythm(&parts);
+(desc, stripped, quotes)
+```
+
+`resolved` is already in ref-encounter order (the resolution loop pushes in
+`refs` order), and the book-source isolation uses `Vec::retain`, which is
+stable, so relative order survives the isolation step. Nothing else in the
+function changed: the ref-resolution loop, the allowed-set filter, the
+`VocabularyId` parse, and `dominant_book_source` + `retain` isolation are all
+unchanged.
+
+### Supporting change: removed now-write-only `sense` field
+
+Removing the sense sort left `ResolvedQuote.sense` written but never read,
+which trips clippy's `dead_code` lint (a hard failure under `-D warnings`).
+The field was removed from the `ResolvedQuote` struct and from the resolve
+push. `dominant_book_source` / `book_source` only read `source`, so behavior is
+unchanged.
+
+### Doc comment updates
+
+- `assemble()` rule 4: `按固定 8 类顺序拼装` -> `按 sensation_refs 出现顺序拼装(Hard 原句;镜头序由 beat 序列表达)`; rule 5 reworded to note ref order is naturally preserved.
+- `assemble_beat_descriptions` doc: `按类别有序拼装` -> `按 sensation_refs 出现顺序拼装`, with an explicit "顺序：保持 refs 遇到顺序（镜头序），不按感官类别重排" bullet.
+
+## Files changed
+
+- `src/prose/assembly.rs` (+48 / -34)
+
+No other files were staged, reverted, reformatted, or deleted. The wider
+worktree has many pre-existing unrelated modified/untracked files (user work
+from other tasks); these were left untouched.
+
+## TDD evidence
+
+### RED (Step 1-2): new failing test
+
+Wrote `assemble_preserves_ref_order_not_sense_order` first. It feeds refs in
+`[visual.bloodstain, atmosphere.coldnight]` order (visual before atmosphere)
+and asserts `血迹` appears before `夜凉如水`. Ran it against the old code:
+
+```
+$ cargo test --lib prose::assembly::tests::assemble_preserves_ref_order_not_sense_order -- --nocapture
+thread '...' panicked at src\prose\assembly.rs:565:9:
+ref order must win over sense order: 夜凉如水，血迹。她看向地面
+test result: FAILED. 0 passed; 1 failed
+```
+
+The old sense-sort produced `夜凉如水，血迹` (atmosphere first) - exactly the
+behavior the test is designed to catch.
+
+### GREEN (Step 3-5): implement fix + update existing test
+
+Implemented the fix (removed sense sort). Renamed
+`orders_all_eight_categories` -> `preserves_ref_input_order_all_categories`
+and updated its assertion to expect **input order**
+(gesture -> emotion -> gustatory -> tactile -> olfactory -> auditory -> visual
+-> atmosphere). The input was already in reverse sense order, so the old
+assertion (`夜凉如水，血迹，…，她伸手把帕子绞了又绞。她进入房间`) had to flip to
+(`她伸手把帕子绞了又绞，心中未免悔恨，苦涩，冰凉的手，血腥味，脚步声，血迹，夜凉如水。她进入房间`).
+
+All other assembly tests use single-sense refs or `contains` checks, so they
+passed unchanged.
+
+```
+$ cargo test --lib prose::assembly -- --nocapture
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out
+```
+
+Full lib suite also green:
+
+```
+$ cargo test --lib
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured
+```
+
+### Test coverage
+
+New / updated tests in `assembly.rs`:
+
+- `assemble_preserves_ref_order_not_sense_order` (NEW) - visual-before-atmosphere
+  ref order is preserved (would have failed under the old sense sort).
+- `preserves_ref_input_order_all_categories` (RENAMED from
+  `orders_all_eight_categories`) - all 8 categories joined in ref-input order
+  with exact-string assertion.
+
+The other 18 assembly tests (beat order, stripping, source isolation, rhythm,
+provenance, KPIs, density) pass unchanged.
+
+## Quality gates
+
+- `cargo test --lib prose::assembly -- --nocapture` -> **PASS** (20 passed).
+- `cargo test --lib` -> **PASS** (76 passed).
+- `cargo fmt --all -- --check` -> **PASS** (clean).
+- `cargo clippy --all-targets --all-features -- -D warnings` -> **PASS** (no
+  warnings; the `sense` field removal was specifically required to keep this
+  green).
 
 ## Commit
-- SHA: `fcd3baa348aae3e76191ab64106217af611d5ac1`
-- Message: `feat: integrate deterministic scene narration`
-- Files changed: 8 (530 insertions, 58 deletions)
 
-## Files (task-owned, staged exclusively)
-- `src/scene/service.rs` — deepened: owns `ProseGenerator`, removed `vocab()` accessor + per-call generator arg, added full validation pipeline + sorting + internal assembly call
-- `src/models/error.rs` — added `InvalidNarrationContext(String)` variant
-- `src/main.rs` — single `deepseek::Client::from_env()` constructs both Rig adapters; no-key branch constructs both Mock adapters; prints `stripped_refs`/`rejected_beats`/`action_only_beats`
-- `tests/scene_test.rs` — 9 `StoryService::new` call sites updated to pass `Arc::new(MockProseGenerator::fallback())`
-- `tests/e2e.rs` — 1 call site updated
-- `tests/prose_test.rs` — added `RecordingProseGenerator` + 4 service-level tests (missing scene, wrong scene derivation, duplicate character, partial-success counters)
-- `src/prose/mod.rs` — `pub use rig_impl::RigProseGenerator` (was `pub(crate)`)
-- `src/prose/rig_impl.rs` — `pub struct RigProseGenerator` + `pub fn new` (was `pub(crate)` + `#[allow(dead_code)]`)
+```
+fb8c86b fix(prose): join quotes in ref order instead of sense order
+ src/prose/assembly.rs | 82 ++++++++++++++++++++++++++++++---------------------
+ 1 file changed, 48 insertions(+), 34 deletions(-)
+```
 
-## Rationale for extra files (src/prose/mod.rs, src/prose/rig_impl.rs)
-Brief listed only 6 files but Step 5 requires `main.rs` to construct `RigProseGenerator::new(client)`. Previously the type was `pub(crate)` — impossible to reference from the binary crate. Visibility bump is the minimal change to satisfy Step 5's production wiring. No behavior change to the generator itself.
+Staged with an explicit path (`git add src/prose/assembly.rs`); no
+`git add -A` / `git add .`. `git show --stat` confirms only
+`src/prose/assembly.rs` is in the commit. Base commit was `943a16a`.
 
-## Commands & Outcomes
+## Constraints honored
 
-| Command | Outcome |
-|---|---|
-| `cargo test --test prose_test` (red, post-Step 1) | FAIL — `InvalidNarrationContext` not found, `narrate_scene` arity mismatch (7 errors). Red state confirmed. |
-| `cargo test --test prose_test` (green, post-Step 6) | ok. 16 passed; 0 failed. |
-| `cargo test --test scene_test` | ok. 9 passed; 0 failed. |
-| `cargo test --test e2e` | ok. 1 passed; 0 failed. |
-| `cargo fmt --all -- --check` | clean (after `cargo fmt --all` applied) |
-| `cargo check --all-targets` | Finished, no errors. |
-| `cargo test --all-targets` | all pass: db_test 16, e2e 1, models_test 6, prose_test 16, scene_test 9, sensory_dimensions_test 1, vocab_test 10. |
-| `cargo clippy --all-targets --all-features -- -D warnings` | Finished, no warnings. |
+- Only `src/prose/assembly.rs` modified and staged.
+- `join_quotes_with_rhythm`, `book_source_isolation`, `dominant_book_source`,
+  and the `assemble()` signature are unchanged.
+- No unrelated worktree files touched.
 
-## Self-Review
+## Self-review findings
 
-### Brief compliance
-- [x] Step 1: 4 failing tests added with `RecordingProseGenerator` (AtomicUsize counter + Mutex<Vec<NarrateRequest>>).
-- [x] Step 2: red state confirmed (compile errors on missing variant + arity).
-- [x] Step 3: `InvalidNarrationContext(String)` variant added with `#[error("invalid narration context: {0}")]`.
-- [x] Step 4: `StoryService` owns `prose_generator: Arc<dyn ProseGenerator>`; constructor takes 4 args; `vocab()` removed; per-call generator arg removed; validation pipeline (scene load -> scene_id match -> participant check -> duplicate check -> character load -> candidate build -> sort -> narrate -> assemble) implemented exactly per spec.
-- [x] Step 5: all 9 `StoryService::new` call sites updated; main.rs uses single `from_env()` with atomic branch constructing both adapters; demo prints all 3 counters.
-- [x] Step 6: all gates green.
-- [x] Step 7: committed with exact message `feat: integrate deterministic scene narration`.
-
-### Behavioral preservation
-- Derivation pipeline untouched (validation-and-retry, MEMORY_LIMIT=50, CONCURRENCY=4, atomic `replace_derivation`).
-- `AssembledProse::assemble` contract unchanged — service calls it with the same args.
-- `candidate_refs_for` still crate-public; `build_candidate_refs` moved into `service.rs` as a private fn (was `pub(crate)` in `rig_impl.rs`). Old `pub(crate) use rig_impl::{build_candidate_refs, participant_set}` re-export kept to avoid breaking other internal callers; `participant_set` no longer used by service (inlined `HashSet` construction) but re-export retained for non-breaking surface.
-
-### Sorting stability
-Service sorts characters/derivations/candidate groups by `CharacterId.0` (Uuid), candidates by `SENSES` index then id, tags lexicographically. Matches `build_prompt` ordering in `rig_impl.rs`.
-
-### Validation order (before generator)
-1. Scene load (SceneNotFound)
-2. Per-derivation: scene_id match (InvalidNarrationContext)
-3. Per-derivation: participant check (InvalidNarrationContext)
-4. Per-derivation: duplicate check (InvalidNarrationContext)
-5. Per-participant: Character load (CharacterNotFound)
-6. Candidate build from service-owned Vocab
-7. Sort + NarrateRequest construction
-8. `prose_generator.narrate()` (Llm error)
-9. `AssembledProse::assemble` (Llm error on empty beats)
-
-Test `missing_scene_fails_before_prose_generator` asserts `recorder.calls() == 0` for nonexistent scene. `derivation_from_another_scene_fails_before_generator` and `duplicate_character_derivations_fail_before_generator` assert `calls() == 0` for their respective InvalidNarrationContext paths.
-
-## Concerns
-1. **`participant_set` now unused at call sites** — `service.rs` builds `HashSet<String>` inline for `assemble`. `rig_impl.rs::participant_set` is still `pub(crate)` re-exported but no longer consumed by service. Kept for non-breaking internal surface; clippy did not flag (the `#[allow(unused_imports)]` on the re-export suppresses it). Future task could prune.
-2. **`build_candidate_refs` duplication** — moved into `service.rs` as private fn. `rig_impl.rs::build_candidate_refs` still exists (now only used by its own `#[cfg(test)]` tests if any, and `pub(crate)` re-export). Not a blocker but a future cleanup candidate.
-3. **`nul` file in worktree root** — pre-existing Windows artifact (`?? nul` in git status), not touched. Left alone per "preserve unrelated dirty work" rule.
-4. **Cargo.toml / src/models/{character,ids}.rs / src/vocab/loader.rs / tests/vocab_test.rs dirty** — pre-existing user work, not touched. Committed only task-owned files.
-
-## Test Summary
-All 59 tests pass across 7 test binaries; fmt/check/clippy clean.
-
----
-
-## Fix (Task 3 review findings)
-
-### Findings addressed
-- **Important 1 (scope creep)**: `src/main.rs` vocab loading reverted to single `let vocab = Vocab::load_from_path(std::path::Path::new("assets/vocab.yaml"))?;`. Removed `mut`, dropped distilled-dir probe block (`distilled_dir`/`is_dir()`/`load_dir_merged()`/eprintln) - that belonged to corpus distillation work, not Task 3. Dual-adapter construction + counter printing kept.
-- **Important 2 (dead code)**: Deleted `build_candidate_refs` and `participant_set` from `src/prose/rig_impl.rs`. Removed `pub(crate) use rig_impl::{build_candidate_refs, participant_set}` re-export from `src/prose/mod.rs` and refreshed module comment. Test module re-imports `ProseCandidate`/`CharacterProseCandidates` from `crate::prose` for the remaining `build_prompt` ordering tests (no test referenced the deleted fns). Service-owned private copies in `src/scene/service.rs` preserved.
-- **Nit 3 (optional, applied)**: `AssembledProse::assemble(...)` now receives `&req.derivations` (the sorted slice) instead of the original unsorted `derivations` parameter - restores symmetry between prompt and assembly. `sorted_derivations` is moved into `NarrateRequest`; borrow from `req.derivations` avoids the clone.
-
-### Quality gates
-- `cargo fmt --all -- --check`: clean
-- `cargo check --all-targets`: clean
-- `cargo test --test prose_test`: 16/16 ok
-- `cargo test --test scene_test`: 9/9 ok
-- `cargo test --test e2e`: 1/1 ok
-- `cargo test --all-targets`: 62 passed, 0 failed across 10 binaries (lib unit 3, integration 59)
-- `cargo clippy --all-targets --all-features -- -D warnings`: clean
-
-### Scope
-Staged files (Task 3 fix only): `src/main.rs`, `src/prose/mod.rs`, `src/prose/rig_impl.rs`, `src/scene/service.rs`. Unrelated dirty/ untracked paths (Cargo.toml, src/models/*, src/vocab/loader.rs, tests/vocab_test.rs, corpus/, assets/distilled/, tools/, src/bin/, etc.) left untouched per preserve-user-work rule.
-
----
-
-## Final Review Fix: Hide Assembly Provenance
-
-### Change
-- Changed `AssembledProse::assemble` to `pub(crate)`, leaving `AssembledProse` public as the `StoryService::narrate_scene` result type.
-- Kept assembly entry out of `src/prose/mod.rs` public re-exports; external callers can no longer supply arbitrary vocabulary, derivations, or participants.
-- Moved direct assembly coverage from `tests/prose_test.rs` into `src/prose/assembly.rs` unit tests.
-- Preserved assembly coverage for all eight category order, beat order, unknown/malformed refs, cross-character refs, missing vocabulary, non-participant POV, missing-derivation POV, empty refs/action-only degradation, all-invalid/action-only degradation, and empty-beats hard error.
-- Kept `tests/prose_test.rs` service-level only; successful assembly is exercised through `StoryService::narrate_scene`.
-
-### Verification
-- `cargo test --lib prose::assembly::tests`: 10 passed, 0 failed.
-- `cargo test --test prose_test`: 4 passed, 0 failed.
-- `cargo fmt --all -- --check`: clean.
-- `cargo test --all-targets`: 60 passed across 10 suites, 0 failed.
-- `cargo check --all-targets`: clean.
-- `cargo clippy --all-targets --all-features -- -D warnings`: clean.
+1. **Order correctness** - `resolved` preserves ref-encounter order by
+   construction (the loop `for raw in refs` pushes in order); `retain` is
+   documented stable; the new `resolved.iter().map(...)` cannot reorder. The
+   new test and the renamed all-categories test both pin exact output strings.
+2. **No behavior drift** - source isolation still runs before the join and
+   still increments `stripped`; `dominant_book_source` still reads `.source`
+   only, so removing `sense` is behavior-neutral.
+3. **Clippy cleanliness** - the only non-mechanical edit beyond the brief was
+   dropping the write-only `sense` field; this is necessary (not optional) to
+   satisfy `clippy -D warnings` and keeps the struct honest.
+4. **No concerns.** Build, fmt, clippy, and focused tests are green.

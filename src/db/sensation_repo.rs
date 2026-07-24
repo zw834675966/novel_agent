@@ -1,3 +1,4 @@
+use crate::db::row_util::{get_string, get_uuid};
 use crate::models::{CharacterId, SceneId, SensorySelection, StoryError, VocabularyId};
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
@@ -62,7 +63,7 @@ impl SensationRepo {
         let Some(row) = row else {
             return Ok(None);
         };
-        Self::parse_row(&row)
+        Ok(Some(Self::parse_row(&row)?))
     }
 
     /// 获取某个角色在指定场景之前（按 scenes.occurred_at 比较）最近一次感官选择
@@ -93,23 +94,45 @@ impl SensationRepo {
         let Some(row) = row else {
             return Ok(None);
         };
-        Self::parse_row(&row)
+        Ok(Some(Self::parse_row(&row)?))
+    }
+
+    /// 列出指定场景的所有感官选择（含 character_id，按 created_at ASC）
+    pub async fn list_for_scene(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<Vec<(CharacterId, SensorySelection)>, StoryError> {
+        let rows = sqlx::query(
+            "SELECT character_id, scene_id, visual_ids_json, auditory_ids_json, olfactory_ids_json, \
+             tactile_ids_json, gustatory_ids_json, emotion_ids_json, gesture_ids_json, \
+             atmosphere_ids_json FROM character_sensations \
+             WHERE scene_id = ? ORDER BY created_at ASC",
+        )
+        .bind(scene_id.0.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::new();
+        for row in &rows {
+            let character_id = CharacterId(get_uuid(row, "character_id")?);
+            let (sel, _) = Self::parse_row(row)?;
+            out.push((character_id, sel));
+        }
+        Ok(out)
     }
 
     /// 将一行 character_sensations 记录解析为 (SensorySelection, SceneId)
     /// 严格 JSON 解析：任一维度解析失败 -> StoryError::Database
-    fn parse_row(
-        row: &sqlx::sqlite::SqliteRow,
-    ) -> Result<Option<(SensorySelection, SceneId)>, StoryError> {
-        let scene_id_str: String = sqlx::Row::try_get(row, "scene_id")?;
-        let visual: String = sqlx::Row::try_get(row, "visual_ids_json")?;
-        let auditory: String = sqlx::Row::try_get(row, "auditory_ids_json")?;
-        let olfactory: String = sqlx::Row::try_get(row, "olfactory_ids_json")?;
-        let tactile: String = sqlx::Row::try_get(row, "tactile_ids_json")?;
-        let gustatory: String = sqlx::Row::try_get(row, "gustatory_ids_json")?;
-        let emotion: String = sqlx::Row::try_get(row, "emotion_ids_json")?;
-        let gesture: String = sqlx::Row::try_get(row, "gesture_ids_json")?;
-        let atmosphere: String = sqlx::Row::try_get(row, "atmosphere_ids_json")?;
+    fn parse_row(row: &sqlx::sqlite::SqliteRow) -> Result<(SensorySelection, SceneId), StoryError> {
+        let scene_id = SceneId(get_uuid(row, "scene_id")?);
+        let visual: String = get_string(row, "visual_ids_json")?;
+        let auditory: String = get_string(row, "auditory_ids_json")?;
+        let olfactory: String = get_string(row, "olfactory_ids_json")?;
+        let tactile: String = get_string(row, "tactile_ids_json")?;
+        let gustatory: String = get_string(row, "gustatory_ids_json")?;
+        let emotion: String = get_string(row, "emotion_ids_json")?;
+        let gesture: String = get_string(row, "gesture_ids_json")?;
+        let atmosphere: String = get_string(row, "atmosphere_ids_json")?;
         let sel = SensorySelection {
             visual_ids: parse_ids(&visual)?,
             auditory_ids: parse_ids(&auditory)?,
@@ -120,10 +143,7 @@ impl SensationRepo {
             gesture_ids: parse_ids(&gesture)?,
             atmosphere_ids: parse_ids(&atmosphere)?,
         };
-        let scene_id = SceneId(
-            Uuid::parse_str(&scene_id_str).map_err(|e| StoryError::Database(e.to_string()))?,
-        );
-        Ok(Some((sel, scene_id)))
+        Ok((sel, scene_id))
     }
 
     /// 在已有事务中插入五感数据（供 DerivationRepo 跨表事务调用）

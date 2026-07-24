@@ -34,18 +34,31 @@ fn vocabulary_id_rejects_empty_segment() {
 }
 
 #[test]
+fn plot_reason_slot_serde_adjacent_tagging() {
+    let slot = PlotReasonSlot::Observed("发现血迹".into());
+    let json = serde_json::to_string(&slot).unwrap();
+    assert_eq!(json, r#"{"kind":"observed","detail":"发现血迹"}"#);
+
+    let back: PlotReasonSlot = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, slot);
+    assert_eq!(back.render(), "见发现血迹");
+}
+
+#[test]
 fn stored_plot_development_keeps_narrative_identity() {
+    let slot = PlotReasonSlot::BehaviorOdd("目不转睛".into());
     let stored = StoredPlotDevelopment {
         character_id: CharacterId(uuid::Uuid::new_v4()),
         scene_id: SceneId(uuid::Uuid::new_v4()),
         development: PlotDevelopment {
             kind: PlotDevelopmentKind::SuspicionRaised,
-            reason: "the witness changed their story".into(),
+            reason: slot.clone(),
         },
         created_at: Utc::now(),
     };
 
-    assert_eq!(stored.development.reason, "the witness changed their story");
+    assert_eq!(stored.development.reason, slot);
+    assert_eq!(stored.development.reason.render(), "目不转睛举止反常");
 }
 
 #[test]

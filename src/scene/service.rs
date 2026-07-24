@@ -1,10 +1,17 @@
 use crate::db::Db;
-use crate::llm::{ContextTagRequest, DerivationRequest, LlmCharacterDerivation, SenseGenerator};
-use crate::models::{CharacterDerivation, CharacterId, CreateScene, SceneId, StoryError};
-use crate::prose::{
-    AssembledProse, CharacterProseCandidates, NarrateRequest, ProseCandidate, ProseGenerator,
+use crate::db::{CandidateResolution, PendingCandidate};
+use crate::llm::{
+    ContextTagRequest, DerivationRequest, LlmCharacterDerivation, LlmRelationshipCandidate,
+    SenseGenerator,
 };
-use crate::text_guard::{MAX_MEMORY_CHARS, MAX_PLOT_REASON_CHARS, sanitize_free_text};
+use crate::models::{
+    CharacterDerivation, CharacterId, CreateScene, RelationshipCandidate, RelationshipCandidateId,
+    SceneId, StoryError,
+};
+use crate::prose::{
+    AssembledProse, CharacterProseCandidates, NarrateRequest, PlanRequest, ProseCandidate,
+    ProseGenerator, ScenePlanner,
+};
 use crate::vocab::Vocab;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
@@ -31,6 +38,7 @@ pub struct StoryService {
     vocab: Vocab,                             // 感官词库（候选集校验 + 叙事拼装）
     sense_generator: Arc<dyn SenseGenerator>, // 感官/记忆 LLM 推导引擎
     prose_generator: Arc<dyn ProseGenerator>, // 叙事编排 LLM 引擎
+    scene_planner: Arc<dyn ScenePlanner>,     // 场景编导 LLM 引擎（大纲+镜头表）
 }
 
 impl StoryService {
@@ -39,12 +47,14 @@ impl StoryService {
         vocab: Vocab,
         sense_generator: Arc<dyn SenseGenerator>,
         prose_generator: Arc<dyn ProseGenerator>,
+        scene_planner: Arc<dyn ScenePlanner>,
     ) -> Self {
         Self {
             db,
             vocab,
             sense_generator,
             prose_generator,
+            scene_planner,
         }
     }
 
@@ -118,6 +128,25 @@ impl StoryService {
             return Err(StoryError::NotSceneParticipant(character_id, scene_id));
         }
 
+        // 1.5. N5 长线物理状态逻辑断言拦截：若角色处于 Dead (死亡) 或 Absent (不在场) 状态，拒绝推导
+        if let Some(state) = self.db.states().get_state(character_id).await? {
+            match state {
+                crate::models::CharacterState::Dead => {
+                    return Err(StoryError::InvalidParticipant(format!(
+                        "角色 {} 已处于死亡 (Dead) 状态，不能参与场景推导",
+                        character.name
+                    )));
+                }
+                crate::models::CharacterState::Absent => {
+                    return Err(StoryError::InvalidParticipant(format!(
+                        "角色 {} 已处于不在场 (Absent) 状态，不能参与场景推导",
+                        character.name
+                    )));
+                }
+                _ => {}
+            }
+        }
+
         // 2. 只读取当前场景之前发生的上下文，避免未来事件泄漏进推导。
         let memories = self
             .db
@@ -135,6 +164,20 @@ impl StoryService {
             .plots()
             .list_before_scene(character_id, scene.occurred_at)
             .await?;
+
+        // 加载场景全部参与者 Character（供关系候选参照）
+        let mut scene_participants: Vec<crate::models::Character> =
+            Vec::with_capacity(scene.participant_ids.len());
+        for pid in &scene.participant_ids {
+            let c = self
+                .db
+                .characters()
+                .get(*pid)
+                .await?
+                .ok_or(StoryError::CharacterNotFound(*pid))?;
+            scene_participants.push(c);
+        }
+
         // Build query early so tag shortlist is relevance-ranked (not pure alpha truncate).
         let mut query_terms: Vec<String> = Vec::new();
         if !character.name.trim().is_empty() {
@@ -163,7 +206,7 @@ impl StoryService {
         let selected_tags = self.vocab.filter_known_tags(&raw_tags.tags);
         // Lexical ranking (RELiC-style select): name + scene tokens + selected tags.
         query_terms.extend(selected_tags.iter().cloned());
-        let candidates = self.vocab.candidates_ranked_limited(
+        let candidates = self.vocab.candidates_ranked_limited_with_quotas(
             &selected_tags,
             &query_terms,
             crate::vocab::DEFAULT_PER_SENSE_CAP,
@@ -176,12 +219,13 @@ impl StoryService {
 
         // 3. 构造请求并调用 LLM
         let req = DerivationRequest {
-            character,
-            scene,
+            character: character.clone(),
+            scene: scene.clone(),
             recent_memories: memories,
             last_sensation,
             candidates,
             prior_plot_developments,
+            scene_participants: scene_participants.clone(),
         };
 
         let raw: LlmCharacterDerivation = self.sense_generator.derive(&req).await?;
@@ -195,7 +239,8 @@ impl StoryService {
 
         // 5. 原子替换当前场景已有结果，避免重复推导留下过期状态。
         let now = Utc::now();
-        self.db
+        let new_memory = self
+            .db
             .derivations()
             .replace_derivation(
                 character_id,
@@ -208,12 +253,30 @@ impl StoryService {
             )
             .await?;
 
+        // 6. 校验并持久化关系候选（只保留目标为场景参与者的有效候选）
+        let participant_ids: HashSet<CharacterId> =
+            scene_participants.iter().map(|c| c.id).collect();
+        let mut relationship_candidates: Vec<RelationshipCandidate> = Vec::new();
+        for llm_cand in &raw.relationship_candidates {
+            if let Some(valid) = validate_and_build_pending_candidate(
+                character_id,
+                llm_cand,
+                scene_id,
+                &participant_ids,
+                Some(new_memory.id),
+            ) {
+                let stored = self.db.relationships().insert_pending(valid).await?;
+                relationship_candidates.push(stored);
+            }
+        }
+
         Ok(CharacterDerivation {
             character_id,
             scene_id,
             sensations,
-            new_memory: raw.new_memory,
+            new_memory,
             plot_development: raw.plot_development,
+            relationship_candidates,
         })
     }
 
@@ -283,9 +346,10 @@ impl StoryService {
     /// 2. 校验所有 derivation:scene_id 匹配、角色为参与者、无重复角色
     /// 3. 加载全部参与者 Character
     /// 4. 从 service-owned Vocab 构造每角色的候选片段元数据(只含当前可解析的 ID)
-    /// 5. 排序 characters / derivations / 候选组 / 候选 / tags 后构造 NarrateRequest
-    /// 6. 调用 service-owned ProseGenerator 产出 LlmNarrative
-    /// 7. 调用内部 assembly 拼装正文 + 校验 ref
+    /// 5. 排序 characters / derivations / 候选组 / 候选 / tags
+    /// 6. 调用 service-owned ScenePlanner 生成编导大纲+镜头表并验证(camera_beats 非空、pov_name 匹配参与者)
+    /// 7. 构造 NarrateRequest 调用 service-owned ProseGenerator 产出 LlmNarrative
+    /// 8. 调用内部 assembly 拼装正文 + 校验 ref
     ///
     /// # 防AI化
     /// LLM 只写 action(叙事骨架),描写一律通过 ref 拉取原文;
@@ -381,12 +445,38 @@ impl StoryService {
             }
         }
 
-        // 6. 构造语义请求并调用 LLM
+        // 6. 调用 ScenePlanner 生成编导大纲+镜头表
+        //    复用已排序的 characters（按 CharacterId 升序）保证 prompt 稳定。
+        let plan = self
+            .scene_planner
+            .plan_scene(&PlanRequest {
+                scene: scene.clone(),
+                characters: characters.clone(),
+            })
+            .await?;
+
+        // 6.1. 验证计划：camera_beats 非空；每个 pov_name 匹配某个角色名
+        if plan.scene_card.camera_beats.is_empty() {
+            return Err(StoryError::Llm(
+                "scene planner returned no camera beats".into(),
+            ));
+        }
+        let valid_names: HashSet<&str> = characters.iter().map(|c| c.name.as_str()).collect();
+        for beat in &plan.scene_card.camera_beats {
+            if !valid_names.contains(beat.pov_name.as_str()) {
+                return Err(StoryError::Llm(format!(
+                    "camera beat pov_name '{}' not found among scene participants",
+                    beat.pov_name
+                )));
+            }
+        }
+
         let req = NarrateRequest {
             scene: scene.clone(),
             characters,
             derivations: sorted_derivations,
             candidates: sorted_candidates,
+            plan,
         };
         let narrative = self.prose_generator.narrate(&req).await?;
 
@@ -396,16 +486,223 @@ impl StoryService {
             .iter()
             .map(|id| id.0.to_string())
             .collect();
-        AssembledProse::assemble(&narrative, &self.vocab, &req.derivations, &participants)
+        // 7b. 降级感官兜底池：必须取自「全量 ranked 候选集」(五感主类)，
+        //     绝不能取自 LLM 已选的 derivation 感官 ID。当 degraded_sensory_density
+        //     为真（五感零选中）时，已选 ID 池里根本没有五感 ID，`assemble` 的注入
+        //     路径会沦为死代码。query_terms 复用 derive_character 对 objective_event
+        //     的分词；tags 留空即可（quota 检索仍会给弱感官保底）。生产环境兜底池必须
+        //     来自 ranked 候选而非 selected IDs——见 tests/prose_test.rs 注释。
+        let mut fallback_query_terms: Vec<String> = Vec::new();
+        for part in scene
+            .objective_event
+            .split(|c: char| c.is_whitespace() || "，。！？、；：,.!?;:\"'《》【】".contains(c))
+        {
+            let t = part.trim();
+            if t.chars().count() >= 2 {
+                fallback_query_terms.push(t.to_string());
+            }
+        }
+        let fallback_pool: HashSet<String> = self
+            .vocab
+            .candidates_ranked_limited_with_quotas(
+                &[],
+                &fallback_query_terms,
+                crate::vocab::DEFAULT_PER_SENSE_CAP,
+                crate::vocab::DEFAULT_TOTAL_CAP,
+            )
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c.sense.as_str(),
+                    "visual" | "auditory" | "olfactory" | "tactile" | "gustatory"
+                )
+            })
+            .map(|c| c.id)
+            .collect();
+        AssembledProse::assemble(
+            &narrative,
+            &self.vocab,
+            &req.derivations,
+            &participants,
+            &fallback_pool,
+        )
+    }
+
+    /// 解析关系候选（接受或拒绝），委托给 RelationshipRepo
+    pub async fn resolve_relationship_candidate(
+        &self,
+        candidate_id: RelationshipCandidateId,
+        resolution: CandidateResolution,
+    ) -> Result<(), StoryError> {
+        self.db
+            .relationships()
+            .resolve_candidate(candidate_id, resolution)
+            .await
+    }
+
+    // ---- 工作台读取 API ----
+
+    /// 列出全部角色（按 name, id 排序）
+    pub async fn list_characters(&self) -> Result<Vec<crate::models::Character>, StoryError> {
+        self.db.characters().list().await
+    }
+
+    /// 列出全部场景（按 occurred_at, id 排序）
+    pub async fn list_scenes(&self) -> Result<Vec<crate::models::Scene>, StoryError> {
+        self.db.scenes().list().await
+    }
+
+    /// 获取单个场景（不存在返回 None）
+    pub async fn get_scene(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<Option<crate::models::Scene>, StoryError> {
+        self.db.scenes().get(scene_id).await
+    }
+
+    /// 获取场景中所有参与者的推导详情（记忆/感官/剧情/候选）
+    pub async fn scene_derivations(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<Vec<crate::models::SceneDerivationDetail>, StoryError> {
+        let scene = self
+            .db
+            .scenes()
+            .get(scene_id)
+            .await?
+            .ok_or(StoryError::SceneNotFound(scene_id))?;
+
+        let memories = self.db.memories().list_for_scene(scene_id).await?;
+        let sensations = self.db.sensations().list_for_scene(scene_id).await?;
+        let plots = self.db.plots().list_for_scene(scene_id).await?;
+        let candidates = self
+            .db
+            .relationships()
+            .list_candidates_for_scene(scene_id)
+            .await?;
+
+        let mut details = Vec::new();
+        for cid in &scene.participant_ids {
+            let character = self
+                .db
+                .characters()
+                .get(*cid)
+                .await?
+                .ok_or(StoryError::CharacterNotFound(*cid))?;
+
+            let memory = memories
+                .iter()
+                .find(|m| m.character_id == *cid)
+                .cloned()
+                .ok_or(StoryError::CharacterNotFound(*cid))?;
+
+            let sensation = sensations
+                .iter()
+                .find(|(c, _)| c == cid)
+                .map(|(_, s)| s.clone())
+                .unwrap_or_default();
+
+            let char_plots: Vec<_> = plots
+                .iter()
+                .filter(|p| p.character_id == *cid)
+                .cloned()
+                .collect();
+            let char_candidates: Vec<_> = candidates
+                .iter()
+                .filter(|c| c.from_character_id == *cid)
+                .cloned()
+                .collect();
+
+            details.push(crate::models::SceneDerivationDetail {
+                character,
+                memory,
+                sensation,
+                plot_developments: char_plots,
+                relationship_candidates: char_candidates,
+            });
+        }
+        Ok(details)
+    }
+
+    /// 获取通过指定场景的关系图谱快照
+    pub async fn story_graph_through(
+        &self,
+        scene_id: SceneId,
+    ) -> Result<crate::models::GraphSnapshot, StoryError> {
+        self.db
+            .relationships()
+            .graph_snapshot_through(scene_id)
+            .await
+    }
+
+    /// 获取关系事实的修订历史
+    pub async fn relationship_history(
+        &self,
+        fact_id: crate::models::RelationshipFactId,
+    ) -> Result<Vec<crate::models::RelationshipRevision>, StoryError> {
+        self.db.relationships().history(fact_id).await
     }
 }
 
-/// Clamp memory content and plot reasons after LLM derive (critique P1 multi-layer leak).
-fn sanitize_derivation_free_text(raw: &mut LlmCharacterDerivation) {
-    raw.new_memory.content = sanitize_free_text(&raw.new_memory.content, MAX_MEMORY_CHARS);
-    for plot in &mut raw.plot_development {
-        plot.reason = sanitize_free_text(&plot.reason, MAX_PLOT_REASON_CHARS);
+/// 校验 LLM 关系候选并构建待持久化的 PendingCandidate
+///
+/// 规则：
+///   - 目标角色 != 源角色
+///   - 目标角色必须是场景参与者
+///   - summary 非空且不超过 200 Unicode 字符
+///   - 分数有效（0-100）
+///   - confidence 有限且在 [0.0, 1.0] 范围内
+///
+/// 返回 None 表示候选无效，应被丢弃（不阻塞有效推导）。
+fn validate_and_build_pending_candidate(
+    source: CharacterId,
+    llm_cand: &LlmRelationshipCandidate,
+    scene_id: SceneId,
+    participant_ids: &HashSet<CharacterId>,
+    evidence_memory_id: Option<crate::models::MemoryId>,
+) -> Option<PendingCandidate> {
+    if llm_cand.target_character_id == source {
+        return None;
     }
+    if !participant_ids.contains(&llm_cand.target_character_id) {
+        return None;
+    }
+    let summary_trimmed = llm_cand.summary.trim();
+    if summary_trimmed.is_empty() || summary_trimmed.chars().count() > 200 {
+        return None;
+    }
+    // 分数校验
+    if llm_cand.tension_score.map(|v| v > 100).unwrap_or(false)
+        || llm_cand.trust_score.map(|v| v > 100).unwrap_or(false)
+        || llm_cand.affection_score.map(|v| v > 100).unwrap_or(false)
+        || llm_cand.power_score.map(|v| v > 100).unwrap_or(false)
+    {
+        return None;
+    }
+    // confidence 校验
+    if !llm_cand.confidence.is_finite() || llm_cand.confidence < 0.0 || llm_cand.confidence > 1.0 {
+        return None;
+    }
+
+    Some(PendingCandidate {
+        scene_id,
+        from: source,
+        to: llm_cand.target_character_id,
+        relationship_type: llm_cand.relationship_type,
+        summary: summary_trimmed.to_string(),
+        tension_score: llm_cand.tension_score,
+        trust_score: llm_cand.trust_score,
+        affection_score: llm_cand.affection_score,
+        power_score: llm_cand.power_score,
+        evidence_memory_id,
+        confidence: llm_cand.confidence,
+    })
+}
+
+/// 推导后自由文本护栏：记忆槽就地清理，保留枚举判别式。
+/// PlotReasonSlot 在 `.render()` 时清理；不再 `render→From` 坍缩为 Other。
+fn sanitize_derivation_free_text(raw: &mut LlmCharacterDerivation) {
+    raw.new_memory.content.sanitize_in_place();
 }
 
 /// 从 derivations 构造每角色的语义候选引用(供 NarrateRequest 使用)
@@ -446,16 +743,17 @@ mod free_text_guard_tests {
     use super::sanitize_derivation_free_text;
     use crate::llm::LlmCharacterDerivation;
     use crate::models::{
-        Certainty, CharacterMemoryDraft, MemorySource, PlotDevelopment, PlotDevelopmentKind,
-        SensorySelection,
+        Certainty, CharacterMemoryDraft, MemoryContentSlot, MemorySource, PlotDevelopment,
+        PlotDevelopmentKind, SensorySelection,
     };
 
     #[test]
-    fn sanitizes_memory_and_plot_reason() {
+    fn sanitizes_memory_preserving_variant() {
         let mut raw = LlmCharacterDerivation {
+            sensory_analysis: String::new(),
             sensations: SensorySelection::default(),
             new_memory: CharacterMemoryDraft {
-                content: "因此他想起了不禁".into(),
+                content: MemoryContentSlot::Dialogue("因此他说了不禁".into()),
                 source: MemorySource::Witnessed,
                 certainty: Certainty::Certain,
             },
@@ -463,10 +761,36 @@ mod free_text_guard_tests {
                 kind: PlotDevelopmentKind::NewClue,
                 reason: "于是发现线索".into(),
             }],
+            relationship_candidates: vec![],
         };
         sanitize_derivation_free_text(&mut raw);
-        assert!(!raw.new_memory.content.contains("因此"));
-        assert!(!raw.new_memory.content.contains("不禁"));
-        assert!(!raw.plot_development[0].reason.contains("于是"));
+        assert!(matches!(
+            &raw.new_memory.content,
+            MemoryContentSlot::Dialogue(_)
+        ));
+        assert!(!raw.new_memory.content.render().contains("因此"));
+        assert!(!raw.new_memory.content.render().contains("不禁"));
+        // plot reason 仍在 render 时剥套话
+        assert!(!raw.plot_development[0].reason.render().contains("于是"));
+    }
+
+    #[test]
+    fn sanitize_does_not_collapse_observation_to_other() {
+        let mut raw = LlmCharacterDerivation {
+            sensory_analysis: String::new(),
+            sensations: SensorySelection::default(),
+            new_memory: CharacterMemoryDraft {
+                content: MemoryContentSlot::Observation("见血印于地".into()),
+                source: MemorySource::Witnessed,
+                certainty: Certainty::Certain,
+            },
+            plot_development: vec![],
+            relationship_candidates: vec![],
+        };
+        sanitize_derivation_free_text(&mut raw);
+        assert_eq!(
+            raw.new_memory.content,
+            MemoryContentSlot::Observation("见血印于地".into())
+        );
     }
 }
