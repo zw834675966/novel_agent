@@ -219,6 +219,15 @@ async fn real_quality_report_flags_sparse_prose() {
     }
 
     let v = runtime_vocab();
+    // Select one primary sense so the derivation is NOT degraded; the beat
+    // still carries no refs, so quote_chars stays 0 and low_quote_density
+    // flags the action-only prose. Without this, the degraded fallback inject
+    // (see prose_test::degraded_fallback_pool_from_ranked_candidates_injects_five_sense)
+    // would add five-sense quotes from the ranked corpus pool, masking the signal.
+    let visual_key = v
+        .entries("visual")
+        .and_then(|m| m.keys().next().cloned())
+        .expect("real corpus has visual entries");
     let db = Db::open_in_memory().await.unwrap();
     let sense = Arc::new(MockSenseGenerator::new(
         LlmContextTagSelection::default(),
@@ -258,10 +267,18 @@ async fn real_quality_report_flags_sparse_prose() {
         .await
         .unwrap();
 
+    // Select one primary sense so the derivation is NOT degraded; the beat
+    // still carries no refs, so quote_chars stays 0 and low_quote_density
+    // flags the action-only prose. (visual_key extracted above before `v` moved.)
+    let mut sensations = SensorySelection::default();
+    sensations
+        .visual_ids
+        .push(VocabularyId::new(&format!("visual.{visual_key}")).unwrap());
+
     let d = CharacterDerivation {
         character_id: cid,
         scene_id: sid,
-        sensations: SensorySelection::default(),
+        sensations,
         new_memory: CharacterMemoryDraft {
             content: "m".into(),
             source: MemorySource::Witnessed,
