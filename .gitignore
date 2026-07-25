@@ -2,3 +2,25 @@
 .env
 novels.db
 .worktrees/
+
+# Local agent / tooling noise
+.agent-org/
+.grok/
+.omo/
+.playwright-mcp/
+*.db
+!assets/**/*.db
+temp/
+scratch/
+server.log
+*.log
+nul
+tools/__pycache__/
+__pycache__/
+AGENTS.md.wip-backup
+04-qa.out.md
+_partial_body.rs
+_repair*.ps1
+prose_run*.txt
+github-sudo-confirm.png
+novels_analysis_report.html
