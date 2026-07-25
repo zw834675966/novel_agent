@@ -214,7 +214,7 @@ impl SenseGenerator for RigSenseGenerator {
         self.derivation_extractor
             .extract(&prompt)
             .await
-            .map_err(|e| StoryError::Llm(format!("{e:?}")))
+            .map_err(StoryError::llm_from_debug)
     }
 
     async fn select_context_tags(
@@ -225,7 +225,7 @@ impl SenseGenerator for RigSenseGenerator {
         self.tag_extractor
             .extract(&prompt)
             .await
-            .map_err(|e| StoryError::Llm(format!("{e:?}")))
+            .map_err(StoryError::llm_from_debug)
     }
 }
 

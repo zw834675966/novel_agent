@@ -2,7 +2,8 @@ use rig::client::CompletionClient;
 use rig::extractor::Extractor;
 use rig::providers::deepseek;
 
-use crate::models::StoryError;
+use crate::models::{PlotDevelopmentKind, StoryError};
+use crate::text_guard::{MAX_MEMORY_CHARS, MAX_PLOT_REASON_CHARS, sanitize_free_text};
 
 use super::contract::LlmNarrative;
 use super::generator::{NarrateRequest, ProseGenerator};
@@ -45,7 +46,7 @@ impl ProseGenerator for RigProseGenerator {
         self.extractor
             .extract(&prompt)
             .await
-            .map_err(|e| StoryError::Llm(format!("{e:?}")))
+            .map_err(StoryError::llm_from_debug)
     }
 }
 
@@ -71,6 +72,36 @@ fn build_prompt(req: &NarrateRequest) -> String {
     s.push_str("参与者:\n");
     for c in &characters {
         s.push_str(&format!("- 角色: {} (pov: {})\n", c.name, c.id.0));
+        if !c.personality.is_empty() {
+            s.push_str(&format!("  性格: {}\n", c.personality.join(", ")));
+        }
+        if !c.skills.is_empty() {
+            s.push_str(&format!("  技能: {}\n", c.skills.join(", ")));
+        }
+    }
+    // 推导上下文:每角色的最新记忆与剧情发展(自由文本复用 text_guard 限长,
+    // 与 service 层 memory/plot reason 护栏一致),让 narrate 不再丢失 derive 语义。
+    if !req.derivations.is_empty() {
+        let mut derivations = req.derivations.clone();
+        derivations.sort_by_key(|d| d.character_id.0);
+        s.push_str("\n推导上下文(记忆与剧情):\n");
+        for d in &derivations {
+            let name = characters
+                .iter()
+                .find(|c| c.id == d.character_id)
+                .map(|c| c.name.as_str())
+                .unwrap_or("未知角色");
+            let memory = sanitize_free_text(&d.new_memory.content, MAX_MEMORY_CHARS);
+            s.push_str(&format!("- 角色: {name}\n  记忆: {memory}\n"));
+            for plot in &d.plot_development {
+                let reason = sanitize_free_text(&plot.reason, MAX_PLOT_REASON_CHARS);
+                s.push_str(&format!(
+                    "  剧情: {} - {}\n",
+                    plot_kind_label(plot.kind),
+                    reason
+                ));
+            }
+        }
     }
     s.push_str("\n候选片段(按角色分组,格式 id | sense | text | tags):\n");
     for cr in &groups {
@@ -106,10 +137,24 @@ fn build_prompt(req: &NarrateRequest) -> String {
     s
 }
 
+/// `PlotDevelopmentKind` 的 snake_case 标签(与 serde `rename_all` 一致),供 prompt 展示。
+fn plot_kind_label(kind: PlotDevelopmentKind) -> &'static str {
+    match kind {
+        PlotDevelopmentKind::SuspicionRaised => "suspicion_raised",
+        PlotDevelopmentKind::ConflictEscalated => "conflict_escalated",
+        PlotDevelopmentKind::GoalChanged => "goal_changed",
+        PlotDevelopmentKind::RelationshipShifted => "relationship_shifted",
+        PlotDevelopmentKind::NewClue => "new_clue",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Character, CharacterId, Scene, SceneId};
+    use crate::models::{
+        Certainty, Character, CharacterDerivation, CharacterId, CharacterMemoryDraft, MemorySource,
+        PlotDevelopment, PlotDevelopmentKind, Scene, SceneId, SensorySelection,
+    };
     use crate::prose::{CharacterProseCandidates, VocabularyCandidate};
     use chrono::Utc;
     use uuid::Uuid;
@@ -209,5 +254,58 @@ mod tests {
         // 铁律已移入 NARRATE_PREAMBLE 系统指令,验证其在 preamble 中存在。
         assert!(NARRATE_PREAMBLE.contains("action 只写客观动作和对话"));
         assert!(NARRATE_PREAMBLE.contains("sensation_refs 只能从提供的候选"));
+    }
+
+    #[test]
+    fn prompt_includes_personality_memory_and_plot() {
+        let cid = "00000000-0000-0000-0000-00000000000a";
+        let scene = Scene {
+            id: SceneId(uuid_from("00000000-0000-0000-0000-00000000000b")),
+            objective_event: "古宅发现一具尸体".into(),
+            participant_ids: vec![CharacterId(uuid_from(cid))],
+            occurred_at: Utc::now(),
+        };
+        let character = Character {
+            id: CharacterId(uuid_from(cid)),
+            name: "侦探".into(),
+            personality: vec!["谨慎".into()],
+            skills: vec!["推理".into()],
+        };
+        let derivation = CharacterDerivation {
+            character_id: CharacterId(uuid_from(cid)),
+            scene_id: scene.id,
+            sensations: SensorySelection::default(),
+            new_memory: CharacterMemoryDraft {
+                content: "看到地上有血迹".into(),
+                source: MemorySource::Witnessed,
+                certainty: Certainty::Certain,
+            },
+            plot_development: vec![PlotDevelopment {
+                kind: PlotDevelopmentKind::NewClue,
+                reason: "血迹指向凶手".into(),
+            }],
+        };
+        let req = NarrateRequest {
+            scene,
+            characters: vec![character],
+            derivations: vec![derivation],
+            candidates: vec![],
+        };
+        let prompt = build_prompt(&req);
+
+        assert!(
+            prompt.contains("性格: 谨慎"),
+            "missing personality: {prompt}"
+        );
+        assert!(prompt.contains("技能: 推理"), "missing skills: {prompt}");
+        assert!(
+            prompt.contains("看到地上有血迹"),
+            "missing memory content: {prompt}"
+        );
+        assert!(
+            prompt.contains("血迹指向凶手"),
+            "missing plot reason: {prompt}"
+        );
+        assert!(prompt.contains("new_clue"), "missing plot kind: {prompt}");
     }
 }

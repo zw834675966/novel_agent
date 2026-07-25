@@ -20,7 +20,7 @@ pub mod sensation; // 五感选择（视觉/听觉/嗅觉/触觉/味觉）
 pub use candidate::VocabularyCandidate;
 pub use character::Character;
 pub use derivation::CharacterDerivation;
-pub use error::StoryError;
+pub use error::{LlmErrorKind, StoryError};
 pub use ids::{CharacterId, MemoryId, SceneId, VocabularyId};
 pub use memory::{CharacterMemory, CharacterMemoryDraft};
 pub use memory_source::{Certainty, MemorySource};

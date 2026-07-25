@@ -8,6 +8,7 @@ edition = "2024"
 anyhow = "1.0.103"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
 dotenv = "0.15.0"
 futures = "0.3"
 rig = { version = "0.40.0", features = ["derive"] }

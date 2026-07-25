@@ -6,7 +6,8 @@ use crate::vocab::Vocab;
 use super::contract::LlmNarrative;
 
 /// Minimum quote density before [`ProseQualityReport::low_quote_density`] is set.
-/// Observational only — does not fail assemble (mock/action-only flows may sit below this).
+/// Observational telemetry only — does not fail assemble (mock/action-only flows
+/// may sit below this). This is a KPI, not a gate.
 pub const MIN_QUOTE_DENSITY: f64 = 0.30;
 
 /// Aggregated quality KPIs for a single assemble (VeriCite-style post-gen observability).
@@ -19,7 +20,7 @@ pub struct ProseQualityReport {
     pub stripped_ref_rate: f64,
     /// Injected quote texts not found in final `text` after assemble (should be 0).
     pub unverified_quotes: usize,
-    /// `quote_density < MIN_QUOTE_DENSITY`.
+    /// `quote_density < MIN_QUOTE_DENSITY` (telemetry flag, not a gate).
     pub low_quote_density: bool,
 }
 
@@ -65,10 +66,10 @@ impl AssembledProse {
     ///   1. `beats` 为空 -> `StoryError::Llm("prose generator returned no beats")`
     ///   2. beat 的 pov 非参与者,或 pov 无匹配 derivation -> 整 beat 拒绝,`rejected_beats`++
     ///   3. ref 不属于该 pov 的 derivation 候选集,或无法通过 Vocab 解析 -> 剥离,`stripped_refs`++
-    ///   4. 合法 ref 按固定 8 类顺序拼装:atmosphere -> visual -> auditory -> olfactory -> tactile -> gustatory -> emotion -> gesture
+    ///   4. 合法 ref 按固定 8 类顺序拼装:atmosphere -> visual -> auditory -> olfactory -> tactile -> gustatory -> emotion -> gesture;同类内片段用全角逗号 `，` 连接
     ///   5. 同类内保持 ref 出现顺序,beat 间保持叙事顺序
     ///   6. 被接受的 beat 若描写为空但 action 非空 -> `action_only_beats`++
-    ///   7. action 经 [`Self::sanitize_action`] 后输出
+    ///   7. action 经 [`Self::sanitize_action`] 后输出;描写非空且 action 非空时,二者之间插入 `。`(除非描写已以 `。！？…`/`.!?` 结尾);`quote_chars` 只计注入片段,不含分隔符
     ///   8. 所有被接受的非空 beat 用单个 `\n` 连接
     ///   9. 装配后对每条注入 quote 做 `text.contains` 回源重扫 → `unverified_quotes`
     pub(crate) fn assemble(
@@ -78,7 +79,10 @@ impl AssembledProse {
         participant_ids: &HashSet<String>,
     ) -> Result<Self, StoryError> {
         if narrative.beats.is_empty() {
-            return Err(StoryError::Llm("prose generator returned no beats".into()));
+            return Err(StoryError::Llm {
+                kind: crate::models::LlmErrorKind::EmptyBeats,
+                message: "prose generator returned no beats".into(),
+            });
         }
 
         // pov -> 该角色候选片段集(8 类合并)
@@ -116,17 +120,32 @@ impl AssembledProse {
             total_refs_seen += refs.len();
             let (desc, stripped, quotes) = assemble_beat_descriptions(refs, vocab, &allowed);
             total_stripped += stripped;
-            quote_chars += desc.chars().count();
+            // J4: quote_chars counts injected quote texts only, not the ， separators.
+            quote_chars += quotes.iter().map(|q| q.chars().count()).sum::<usize>();
             injected_quotes.extend(quotes);
 
             let action = Self::sanitize_action(action);
+            let action_nonempty = !action.trim().is_empty();
+            // J2/J3: join desc and action with 。 (U+3002) unless desc is empty
+            // (action-only beat), action is empty (desc only, no trailing 。), or
+            // desc already ends with terminal punctuation (。！？… or .!?).
+            let desc_terminal = desc
+                .chars()
+                .last()
+                .is_some_and(|c| matches!(c, '。' | '！' | '？' | '…' | '.' | '!' | '?'));
             let para = if desc.is_empty() {
-                if !action.trim().is_empty() {
+                if action_nonempty {
                     action_only += 1;
                 }
                 action
+            } else if action_nonempty {
+                if desc_terminal {
+                    format!("{desc}{action}")
+                } else {
+                    format!("{desc}。{action}")
+                }
             } else {
-                format!("{desc}{action}")
+                desc
             };
             // Count accepted beats that contribute to output (or empty accepted with empty action).
             accepted_beats += 1;
@@ -236,7 +255,9 @@ fn assemble_beat_descriptions(
         }
     }
     let quotes = parts.clone();
-    (parts.join(""), stripped, quotes)
+    // J1: join injected quote texts with fullwidth comma ， (U+FF0C). The `quotes`
+    // vec keeps the raw fragments so provenance `text.contains(quote)` stays exact.
+    (parts.join("，"), stripped, quotes)
 }
 
 #[cfg(test)]
@@ -357,11 +378,82 @@ gesture:
         )
         .unwrap();
 
+        // P1: quotes join with ，; desc/action split with 。 (desc lacks terminal punct).
         assert_eq!(
             prose.text,
-            "夜凉如水血迹脚步声血腥味冰凉的手苦涩心中未免悔恨她伸手把帕子绞了又绞她起身推门。"
+            "夜凉如水，血迹，脚步声，血腥味，冰凉的手，苦涩，心中未免悔恨，她伸手把帕子绞了又绞。她起身推门。"
         );
         assert_eq!(prose.stripped_refs, 0);
+    }
+
+    #[test]
+    fn multi_quote_join_uses_fullwidth_comma() {
+        // A1: two quote fragments in the same beat join with ， (U+FF0C).
+        let ids = ["atmosphere.coldnight", "visual.bloodstain"];
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "", &ids)]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &ids)],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        // J3: empty action -> desc only, no trailing 。
+        assert_eq!(prose.text, "夜凉如水，血迹");
+        assert_eq!(prose.stripped_refs, 0);
+    }
+
+    #[test]
+    fn desc_action_separator_inserts_period() {
+        // A2: non-empty desc + non-empty action -> 。 between when desc lacks terminal punct.
+        let ids = ["emotion.sorrow"];
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她落座。", &ids)]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &ids)],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.text, "心中未免悔恨。她落座。");
+    }
+
+    #[test]
+    fn desc_ending_in_terminal_punct_skips_extra_period() {
+        // J2 edge: desc already ends with 。 -> no extra 。 before action.
+        let vocab = Vocab::load_from_str(
+            r#"
+emotion:
+  sigh:
+    text: "她长叹一声。"
+    tags: ["grief"]
+"#,
+        )
+        .unwrap();
+        let ids = ["emotion.sigh"];
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她落座。", &ids)]),
+            &vocab,
+            &[derivation(CHARACTER_A, &ids)],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.text, "她长叹一声。她落座。");
+    }
+
+    #[test]
+    fn quote_chars_exclude_separators() {
+        // A5: quote_chars counts injected quote texts only, not ， / 。 separators.
+        let ids = ["atmosphere.coldnight", "visual.bloodstain"];
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她落座。", &ids)]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &ids)],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        // "夜凉如水" (4) + "血迹" (2) = 6; separators ， and 。 excluded.
+        assert_eq!(prose.quote_chars, 6);
+        assert_eq!(prose.text, "夜凉如水，血迹。她落座。");
+        assert!((prose.quote_density() - (6.0 / prose.text.chars().count() as f64)).abs() < 1e-9);
     }
 
     #[test]
@@ -394,7 +486,8 @@ gesture:
         )
         .unwrap();
 
-        assert_eq!(prose.text, "心中未免悔恨她落座。");
+        // P1: single desc + action -> 。 separator (desc lacks terminal punct).
+        assert_eq!(prose.text, "心中未免悔恨。她落座。");
         assert_eq!(prose.stripped_refs, 2);
     }
 
@@ -444,7 +537,8 @@ gesture:
         .unwrap();
 
         assert_eq!(prose.rejected_beats, 1);
-        assert_eq!(prose.text, "心中未免悔恨她抬头。");
+        // P1: single desc + action -> 。 separator.
+        assert_eq!(prose.text, "心中未免悔恨。她抬头。");
     }
 
     #[test]
@@ -500,7 +594,13 @@ gesture:
         )
         .unwrap_err();
 
-        assert!(matches!(error, StoryError::Llm(message) if message.contains("no beats")));
+        assert!(matches!(
+            error,
+            StoryError::Llm {
+                kind: crate::models::LlmErrorKind::EmptyBeats,
+                message
+            } if message.contains("no beats")
+        ));
     }
 
     #[test]
