@@ -11,7 +11,8 @@ mod generator; // SenseGenerator trait + 推导请求上下文
 mod mock; // 测试用 mock 实现
 mod rig_impl; // rig（DeepSeek）生产实现
 
+pub use crate::models::VocabularyCandidate;
 pub use contract::{LlmCharacterDerivation, LlmContextTagSelection};
-pub use generator::{ContextTagRequest, DerivationRequest, SenseGenerator, VocabularyCandidate};
+pub use generator::{ContextTagRequest, DerivationRequest, SenseGenerator};
 pub use mock::MockSenseGenerator;
 pub use rig_impl::RigSenseGenerator;

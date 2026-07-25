@@ -3,7 +3,7 @@
 // 测试 Vocab 的 YAML 加载、候选集生成、validate_selection 校验逻辑。
 
 use novels::models::*;
-use novels::vocab::{Vocab, validate};
+use novels::vocab::{SENSES, Vocab, validate};
 use std::collections::HashSet;
 
 fn sample_yaml() -> &'static str {
@@ -19,6 +19,19 @@ auditory:
 "#
 }
 
+/// Build a HashSet of all vocab IDs (replaces test-only Vocab::candidate_set)
+fn all_vocab_ids(v: &Vocab) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for sense in SENSES {
+        if let Some(map) = v.entries(sense) {
+            for key in map.keys() {
+                set.insert(format!("{sense}.{key}"));
+            }
+        }
+    }
+    set
+}
+
 #[test]
 fn loads_all_senses() {
     // 验证 YAML 能正确加载所有感官类别
@@ -32,9 +45,10 @@ fn loads_all_senses() {
 fn candidates_filter_by_tag() {
     // 验证按标签过滤候选集
     let v = Vocab::load_from_str(sample_yaml()).unwrap();
-    let cands = v.candidates("visual", &["injury"]);
-    assert_eq!(cands.len(), 1);
-    assert_eq!(cands[0].as_str(), "visual.bloodstain");
+    let cands = v.candidates_for_tags(&["injury".to_string()]);
+    let visual: Vec<_> = cands.iter().filter(|c| c.sense == "visual").collect();
+    assert_eq!(visual.len(), 1);
+    assert_eq!(visual[0].id, "visual.bloodstain");
 }
 
 #[test]
@@ -61,10 +75,10 @@ emotion:
   e: { text: "e", tags: ["t"] }
 "#;
     let v = Vocab::load_from_str(yaml).unwrap();
-    let c = v.candidates_for_tags_limited(&["t".into()], 2, 3);
+    let c = v.candidates_ranked_limited(&["t".into()], &[], 2, 3);
     assert!(c.len() <= 3);
     // 确定性：同输入多次结果一致（VocabularyCandidate 无 PartialEq，比 id 列表）
-    let c2 = v.candidates_for_tags_limited(&["t".into()], 2, 3);
+    let c2 = v.candidates_ranked_limited(&["t".into()], &[], 2, 3);
     let ids: Vec<_> = c.iter().map(|x| x.id.as_str()).collect();
     let ids2: Vec<_> = c2.iter().map(|x| x.id.as_str()).collect();
     assert_eq!(ids, ids2);
@@ -118,6 +132,64 @@ emotion:
         ranked.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
         ranked2.iter().map(|c| c.id.as_str()).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn bm25_ranks_repeated_term_higher() {
+    // TF weight: same term twice in text should beat once (no voice-tag confound).
+    let yaml = r#"
+visual:
+  once: { text: "雨夜独坐", tags: ["t"] }
+  twice: { text: "雨夜又见雨夜", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &["雨夜".into()], 2, 2);
+    assert_eq!(ranked[0].id, "visual.twice");
+}
+
+#[test]
+fn bm25_rare_term_beats_common_term() {
+    // IDF: rare term 「紫菱洲」 beats frequent 「宝玉」 when both are in the query.
+    let yaml = r#"
+visual:
+  rare_hit: { text: "紫菱洲边", tags: ["t"] }
+  common_hit: { text: "宝玉", tags: ["t"] }
+  filler_a: { text: "宝玉走了", tags: ["t"] }
+  filler_b: { text: "宝玉来了", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked =
+        v.candidates_ranked_limited(&["t".into()], &["紫菱洲".into(), "宝玉".into()], 4, 4);
+    assert_eq!(ranked[0].id, "visual.rare_hit");
+}
+
+#[test]
+fn bm25_empty_query_falls_back_to_stable_order() {
+    let yaml = r#"
+visual:
+  z: { text: "z", tags: ["t"] }
+  a: { text: "a", tags: ["t"] }
+emotion:
+  m: { text: "m", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &[], 2, 3);
+    let ids: Vec<_> = ranked.iter().map(|c| c.id.as_str()).collect();
+    // Empty query → BM25=0, equal selected boost → SENSES then id: visual.a, visual.z, emotion.m
+    assert_eq!(ids, vec!["visual.a", "visual.z", "emotion.m"]);
+}
+
+#[test]
+fn bm25_preserves_voice_isolation() {
+    // Exact name tag must still beat a BM25-only text hit for a different character.
+    let yaml = r#"
+gesture:
+  other: { text: "宝玉宝玉宝玉", tags: ["t", "贾琏"] }
+  self: { text: "点头", tags: ["t", "宝玉"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &["宝玉".into()], 2, 2);
+    assert_eq!(ranked[0].id, "gesture.self");
 }
 
 #[test]
@@ -210,7 +282,7 @@ atmosphere:
     assert!(v.has("gesture", "zhz-c003-02"));
     assert!(v.has("atmosphere", "hlm-c005-03"));
 
-    let set = v.candidate_set(&[]);
+    let set = all_vocab_ids(&v);
     assert_eq!(set.len(), 3);
 
     let mut sel = SensorySelection::default();
@@ -241,7 +313,7 @@ emotion:
     base.merge(distilled);
     assert!(base.has("visual", "bloodstain"));
     assert!(base.has("emotion", "zhz-c001-01"));
-    assert_eq!(base.candidate_set(&[]).len(), 3);
+    assert_eq!(all_vocab_ids(&base).len(), 3);
 }
 
 #[test]
@@ -256,4 +328,28 @@ fn load_runtime_vocab_merges_base_and_distilled_fixture() {
     assert!(v.has("visual", "bloodstain")); // base
     assert!(v.has("emotion", "hlm-c001-01") || report.distilled_files >= 1);
     assert!(report.total_entries > report.base_entries);
+}
+#[test]
+fn bm25_bigram_partial_match() {
+    // Bigrams give partial credit: query 「雨中人」 is a substring of 「雨中人影」
+    // (whole-term hit) but NOT of 「雨中独坐」. Yet 「雨中独坐」 shares the bigram 雨中
+    // with the query, so it must rank above the fully-unrelated 「完全无关」.
+    // Whole-term-only BM25 would tie 雨中独坐 with 完全无关 at 0.
+    let yaml = r#"
+visual:
+  full: { text: "雨中人影", tags: ["t"] }
+  partial: { text: "雨中独坐", tags: ["t"] }
+  none: { text: "完全无关", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &["雨中人".into()], 3, 3);
+    let ids: Vec<_> = ranked.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids[0], "visual.full");
+    let partial_pos = ids.iter().position(|x| *x == "visual.partial").unwrap();
+    let none_pos = ids.iter().position(|x| *x == "visual.none").unwrap();
+    assert!(
+        partial_pos < none_pos,
+        "bigram partial match must rank partial above none: {:?}",
+        ids
+    );
 }

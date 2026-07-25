@@ -132,7 +132,7 @@ async fn latest_sensation_returns_most_recent() {
         .await
         .unwrap();
     db.derivations()
-        .insert_derivation(
+        .replace_derivation(
             cid,
             sid1,
             &SensorySelection::default(),
@@ -141,13 +141,15 @@ async fn latest_sensation_returns_most_recent() {
                 source: MemorySource::Witnessed,
                 certainty: Certainty::Certain,
             },
+            &[],
+            &[],
             Utc::now(),
         )
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     db.derivations()
-        .insert_derivation(
+        .replace_derivation(
             cid,
             sid2,
             &SensorySelection::default(),
@@ -156,6 +158,8 @@ async fn latest_sensation_returns_most_recent() {
                 source: MemorySource::Witnessed,
                 certainty: Certainty::Certain,
             },
+            &[],
+            &[],
             Utc::now(),
         )
         .await
@@ -186,7 +190,7 @@ async fn sensation_round_trip_preserves_all_eight_dimensions() {
         atmosphere_ids: vec![VocabularyId::new("atmosphere.x").unwrap()],
     };
     db.derivations()
-        .insert_derivation(
+        .replace_derivation(
             cid,
             sid,
             &sensations,
@@ -195,6 +199,8 @@ async fn sensation_round_trip_preserves_all_eight_dimensions() {
                 source: MemorySource::Witnessed,
                 certainty: Certainty::Certain,
             },
+            &[],
+            &[],
             Utc::now(),
         )
         .await
@@ -217,15 +223,15 @@ async fn list_memories_caps_at_50() {
     // 验证记忆查询上限为 50 条
     let db = Db::open_in_memory().await.unwrap();
     let cid = CharacterId(Uuid::new_v4());
-    let sid = SceneId(Uuid::new_v4());
     db.characters().create(cid, "C", &[], &[]).await.unwrap();
-    db.scenes()
-        .create(sid, "event", &[cid], Utc::now())
-        .await
-        .unwrap();
     for _ in 0..60 {
+        let sid = SceneId(Uuid::new_v4());
+        db.scenes()
+            .create(sid, "event", &[cid], Utc::now())
+            .await
+            .unwrap();
         db.derivations()
-            .insert_derivation(
+            .replace_derivation(
                 cid,
                 sid,
                 &SensorySelection::default(),
@@ -234,6 +240,8 @@ async fn list_memories_caps_at_50() {
                     source: MemorySource::Witnessed,
                     certainty: Certainty::Certain,
                 },
+                &[],
+                &[],
                 Utc::now(),
             )
             .await
@@ -258,7 +266,7 @@ async fn derivation_tx_atomic_on_memory_failure() {
         .unwrap();
     let result = db
         .derivations()
-        .insert_derivation(
+        .replace_derivation(
             cid,
             fake_sid,
             &SensorySelection::default(),
@@ -267,6 +275,8 @@ async fn derivation_tx_atomic_on_memory_failure() {
                 source: MemorySource::Witnessed,
                 certainty: Certainty::Certain,
             },
+            &[],
+            &[],
             Utc::now(),
         )
         .await;

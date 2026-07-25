@@ -24,37 +24,6 @@ impl DerivationRepo {
         Self { pool }
     }
 
-    /// 原子写入：感官 + 新记忆同一事务
-    ///
-    /// # 参数
-    /// - `sel`    - LLM 选择的五感词汇
-    /// - `memory` - LLM 生成的新记忆草稿
-    ///
-    /// 失败时：任何一步出错 -> 全事务回滚，数据库状态不变
-    pub async fn insert_derivation(
-        &self,
-        character_id: CharacterId,
-        scene_id: SceneId,
-        sel: &SensorySelection,
-        memory: &CharacterMemoryDraft,
-        now: DateTime<Utc>,
-    ) -> Result<(), StoryError> {
-        let mut tx = self.pool.begin().await?;
-        SensationRepo::insert_in_tx(&mut tx, character_id, scene_id, sel, now).await?;
-        MemoryRepo::insert_in_tx(
-            &mut tx,
-            character_id,
-            scene_id,
-            &memory.content,
-            memory.source,
-            memory.certainty,
-            now,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     /// 原子替换：删除某 `(character_id, scene_id)` 的旧状态并在同一事务中插入全部新状态
     ///
     /// 在一次 `pool.begin()` 事务中：

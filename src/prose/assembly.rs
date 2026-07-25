@@ -5,11 +5,31 @@ use crate::vocab::Vocab;
 
 use super::contract::LlmNarrative;
 
+/// Minimum quote density before [`ProseQualityReport::low_quote_density`] is set.
+/// Observational telemetry only — does not fail assemble (mock/action-only flows
+/// may sit below this). This is a KPI, not a gate.
+pub const MIN_QUOTE_DENSITY: f64 = 0.30;
+
+/// Aggregated quality KPIs for a single assemble (VeriCite-style post-gen observability).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProseQualityReport {
+    pub quote_density: f64,
+    /// `action_only_beats / accepted_beats` (0 if no accepted beats).
+    pub action_only_rate: f64,
+    /// `stripped_refs / total_refs_seen` (0 if no refs seen).
+    pub stripped_ref_rate: f64,
+    /// Injected quote texts not found in final `text` after assemble (should be 0).
+    pub unverified_quotes: usize,
+    /// `quote_density < MIN_QUOTE_DENSITY` (telemetry flag, not a gate).
+    pub low_quote_density: bool,
+}
+
 /// 拼装结果:正文 + 剥离/拒绝/动作-唯一计数 + quote density 可观测
 /// ================================================================
 /// `action_only_beats` 统计"被接受但描写为空、只输出 action"的 beat 数。
 /// `quote_chars` / `total_chars` 用于 quote density（原著描写占比）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `unverified_quotes` / `quality`：装配后回源重扫 + 聚合 KPI。
+#[derive(Debug, Clone, PartialEq)]
 pub struct AssembledProse {
     pub text: String,
     pub stripped_refs: usize,
@@ -19,6 +39,10 @@ pub struct AssembledProse {
     pub quote_chars: usize,
     /// Total characters in final `text` (including actions and newlines).
     pub total_chars: usize,
+    /// Post-assemble provenance failures (injected text missing from final body).
+    pub unverified_quotes: usize,
+    /// Aggregated KPIs (density, rates, density threshold flag).
+    pub quality: ProseQualityReport,
 }
 
 impl AssembledProse {
@@ -42,11 +66,12 @@ impl AssembledProse {
     ///   1. `beats` 为空 -> `StoryError::Llm("prose generator returned no beats")`
     ///   2. beat 的 pov 非参与者,或 pov 无匹配 derivation -> 整 beat 拒绝,`rejected_beats`++
     ///   3. ref 不属于该 pov 的 derivation 候选集,或无法通过 Vocab 解析 -> 剥离,`stripped_refs`++
-    ///   4. 合法 ref 按固定 8 类顺序拼装:atmosphere -> visual -> auditory -> olfactory -> tactile -> gustatory -> emotion -> gesture
+    ///   4. 合法 ref 按固定 8 类顺序拼装:atmosphere -> visual -> auditory -> olfactory -> tactile -> gustatory -> emotion -> gesture;同类内片段用全角逗号 `，` 连接
     ///   5. 同类内保持 ref 出现顺序,beat 间保持叙事顺序
     ///   6. 被接受的 beat 若描写为空但 action 非空 -> `action_only_beats`++
-    ///   7. action 经 [`Self::sanitize_action`] 后输出
+    ///   7. action 经 [`Self::sanitize_action`] 后输出;描写非空且 action 非空时,二者之间插入 `。`(除非描写已以 `。！？…`/`.!?` 结尾);`quote_chars` 只计注入片段,不含分隔符
     ///   8. 所有被接受的非空 beat 用单个 `\n` 连接
+    ///   9. 装配后对每条注入 quote 做 `text.contains` 回源重扫 → `unverified_quotes`
     pub(crate) fn assemble(
         narrative: &LlmNarrative,
         vocab: &Vocab,
@@ -54,7 +79,10 @@ impl AssembledProse {
         participant_ids: &HashSet<String>,
     ) -> Result<Self, StoryError> {
         if narrative.beats.is_empty() {
-            return Err(StoryError::Llm("prose generator returned no beats".into()));
+            return Err(StoryError::Llm {
+                kind: crate::models::LlmErrorKind::EmptyBeats,
+                message: "prose generator returned no beats".into(),
+            });
         }
 
         // pov -> 该角色候选片段集(8 类合并)
@@ -69,34 +97,58 @@ impl AssembledProse {
         let mut rejected = 0usize;
         let mut action_only = 0usize;
         let mut quote_chars = 0usize;
+        let mut accepted_beats = 0usize;
+        let mut total_refs_seen = 0usize;
+        let mut injected_quotes: Vec<String> = Vec::new();
 
         for beat in &narrative.beats {
-            let Beat { pov, action, refs } = unpack_beat(beat);
-            if !participant_ids.contains(&pov) {
+            let pov = &beat.pov;
+            let action = &beat.action;
+            let refs = &beat.sensation_refs;
+            if !participant_ids.contains(pov) {
                 rejected += 1;
                 continue;
             }
             // pov 必须有匹配的 derivation;缺失则拒绝整 beat
-            let allowed = match cand_map.get(&pov) {
+            let allowed = match cand_map.get(pov) {
                 Some(set) => set.clone(),
                 None => {
                     rejected += 1;
                     continue;
                 }
             };
-            let (desc, stripped) = assemble_beat_descriptions(&refs, vocab, &allowed);
+            total_refs_seen += refs.len();
+            let (desc, stripped, quotes) = assemble_beat_descriptions(refs, vocab, &allowed);
             total_stripped += stripped;
-            quote_chars += desc.chars().count();
+            // J4: quote_chars counts injected quote texts only, not the ， separators.
+            quote_chars += quotes.iter().map(|q| q.chars().count()).sum::<usize>();
+            injected_quotes.extend(quotes);
 
-            let action = Self::sanitize_action(&action);
+            let action = Self::sanitize_action(action);
+            let action_nonempty = !action.trim().is_empty();
+            // J2/J3: join desc and action with 。 (U+3002) unless desc is empty
+            // (action-only beat), action is empty (desc only, no trailing 。), or
+            // desc already ends with terminal punctuation (。！？… or .!?).
+            let desc_terminal = desc
+                .chars()
+                .last()
+                .is_some_and(|c| matches!(c, '。' | '！' | '？' | '…' | '.' | '!' | '?'));
             let para = if desc.is_empty() {
-                if !action.trim().is_empty() {
+                if action_nonempty {
                     action_only += 1;
                 }
                 action
+            } else if action_nonempty {
+                if desc_terminal {
+                    format!("{desc}{action}")
+                } else {
+                    format!("{desc}。{action}")
+                }
             } else {
-                format!("{desc}{action}")
+                desc
             };
+            // Count accepted beats that contribute to output (or empty accepted with empty action).
+            accepted_beats += 1;
             if !para.trim().is_empty() {
                 paragraphs.push(para);
             }
@@ -104,6 +156,31 @@ impl AssembledProse {
 
         let text = paragraphs.join("\n");
         let total_chars = text.chars().count();
+        // Post-assemble provenance: every injected quote must appear in final body.
+        let unverified_quotes = injected_quotes
+            .iter()
+            .filter(|q| !q.is_empty() && !text.contains(q.as_str()))
+            .count();
+        let quote_density = if total_chars == 0 {
+            0.0
+        } else {
+            quote_chars as f64 / total_chars as f64
+        };
+        let quality = ProseQualityReport {
+            quote_density,
+            action_only_rate: if accepted_beats == 0 {
+                0.0
+            } else {
+                action_only as f64 / accepted_beats as f64
+            },
+            stripped_ref_rate: if total_refs_seen == 0 {
+                0.0
+            } else {
+                total_stripped as f64 / total_refs_seen as f64
+            },
+            unverified_quotes,
+            low_quote_density: quote_density < MIN_QUOTE_DENSITY,
+        };
         Ok(Self {
             text,
             stripped_refs: total_stripped,
@@ -111,34 +188,32 @@ impl AssembledProse {
             action_only_beats: action_only,
             quote_chars,
             total_chars,
+            unverified_quotes,
+            quality,
         })
     }
 }
 
 /// 从该角色的 derivation 收集全部合法候选片段 ID(8 类合并)
 pub(crate) fn candidate_refs_for(derivation: &CharacterDerivation) -> HashSet<String> {
-    let s = &derivation.sensations;
-    s.visual_ids
+    derivation
+        .sensations
+        .sense_fields()
         .iter()
-        .chain(s.auditory_ids.iter())
-        .chain(s.olfactory_ids.iter())
-        .chain(s.tactile_ids.iter())
-        .chain(s.gustatory_ids.iter())
-        .chain(s.emotion_ids.iter())
-        .chain(s.gesture_ids.iter())
-        .chain(s.atmosphere_ids.iter())
+        .flat_map(|(_, ids)| ids.iter())
         .map(|id| id.as_str().to_string())
         .collect()
 }
 
-/// 按类别有序拼装单 beat 的描写片段,返回拼好的描写段(可能为空)+ 剥离计数
+/// 按类别有序拼装单 beat 的描写片段。
 ///
+/// 返回 `(描写段, 剥离计数, 注入的原文列表)`。
 /// 顺序模拟小说段落节奏:氛围开头 -> 感官穿插 -> 情绪 -> 神态
 fn assemble_beat_descriptions(
     refs: &[String],
     vocab: &Vocab,
     allowed: &HashSet<String>,
-) -> (String, usize) {
+) -> (String, usize, Vec<String>) {
     let mut by_cat: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     let mut stripped = 0;
@@ -179,21 +254,10 @@ fn assemble_beat_descriptions(
             }
         }
     }
-    (parts.join(""), stripped)
-}
-
-struct Beat {
-    pov: String,
-    action: String,
-    refs: Vec<String>,
-}
-
-fn unpack_beat(b: &super::contract::NarrativeBeat) -> Beat {
-    Beat {
-        pov: b.pov.clone(),
-        action: b.action.clone(),
-        refs: b.sensation_refs.clone(),
-    }
+    let quotes = parts.clone();
+    // J1: join injected quote texts with fullwidth comma ， (U+FF0C). The `quotes`
+    // vec keeps the raw fragments so provenance `text.contains(quote)` stays exact.
+    (parts.join("，"), stripped, quotes)
 }
 
 #[cfg(test)]
@@ -314,11 +378,82 @@ gesture:
         )
         .unwrap();
 
+        // P1: quotes join with ，; desc/action split with 。 (desc lacks terminal punct).
         assert_eq!(
             prose.text,
-            "夜凉如水血迹脚步声血腥味冰凉的手苦涩心中未免悔恨她伸手把帕子绞了又绞她起身推门。"
+            "夜凉如水，血迹，脚步声，血腥味，冰凉的手，苦涩，心中未免悔恨，她伸手把帕子绞了又绞。她起身推门。"
         );
         assert_eq!(prose.stripped_refs, 0);
+    }
+
+    #[test]
+    fn multi_quote_join_uses_fullwidth_comma() {
+        // A1: two quote fragments in the same beat join with ， (U+FF0C).
+        let ids = ["atmosphere.coldnight", "visual.bloodstain"];
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "", &ids)]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &ids)],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        // J3: empty action -> desc only, no trailing 。
+        assert_eq!(prose.text, "夜凉如水，血迹");
+        assert_eq!(prose.stripped_refs, 0);
+    }
+
+    #[test]
+    fn desc_action_separator_inserts_period() {
+        // A2: non-empty desc + non-empty action -> 。 between when desc lacks terminal punct.
+        let ids = ["emotion.sorrow"];
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她落座。", &ids)]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &ids)],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.text, "心中未免悔恨。她落座。");
+    }
+
+    #[test]
+    fn desc_ending_in_terminal_punct_skips_extra_period() {
+        // J2 edge: desc already ends with 。 -> no extra 。 before action.
+        let vocab = Vocab::load_from_str(
+            r#"
+emotion:
+  sigh:
+    text: "她长叹一声。"
+    tags: ["grief"]
+"#,
+        )
+        .unwrap();
+        let ids = ["emotion.sigh"];
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她落座。", &ids)]),
+            &vocab,
+            &[derivation(CHARACTER_A, &ids)],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.text, "她长叹一声。她落座。");
+    }
+
+    #[test]
+    fn quote_chars_exclude_separators() {
+        // A5: quote_chars counts injected quote texts only, not ， / 。 separators.
+        let ids = ["atmosphere.coldnight", "visual.bloodstain"];
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她落座。", &ids)]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &ids)],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        // "夜凉如水" (4) + "血迹" (2) = 6; separators ， and 。 excluded.
+        assert_eq!(prose.quote_chars, 6);
+        assert_eq!(prose.text, "夜凉如水，血迹。她落座。");
+        assert!((prose.quote_density() - (6.0 / prose.text.chars().count() as f64)).abs() < 1e-9);
     }
 
     #[test]
@@ -351,7 +486,8 @@ gesture:
         )
         .unwrap();
 
-        assert_eq!(prose.text, "心中未免悔恨她落座。");
+        // P1: single desc + action -> 。 separator (desc lacks terminal punct).
+        assert_eq!(prose.text, "心中未免悔恨。她落座。");
         assert_eq!(prose.stripped_refs, 2);
     }
 
@@ -401,7 +537,8 @@ gesture:
         .unwrap();
 
         assert_eq!(prose.rejected_beats, 1);
-        assert_eq!(prose.text, "心中未免悔恨她抬头。");
+        // P1: single desc + action -> 。 separator.
+        assert_eq!(prose.text, "心中未免悔恨。她抬头。");
     }
 
     #[test]
@@ -457,7 +594,13 @@ gesture:
         )
         .unwrap_err();
 
-        assert!(matches!(error, StoryError::Llm(message) if message.contains("no beats")));
+        assert!(matches!(
+            error,
+            StoryError::Llm {
+                kind: crate::models::LlmErrorKind::EmptyBeats,
+                message
+            } if message.contains("no beats")
+        ));
     }
 
     #[test]
@@ -498,5 +641,56 @@ gesture:
         .unwrap();
         assert!(!prose.text.contains("因此"));
         assert!(prose.text.contains("她转身"));
+    }
+
+    #[test]
+    fn verify_provenance_zero_for_clean_assemble() {
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她落座。", &["emotion.sorrow"])]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &["emotion.sorrow"])],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.unverified_quotes, 0);
+        assert_eq!(prose.quality.unverified_quotes, 0);
+        assert!(prose.text.contains("心中未免悔恨"));
+    }
+
+    #[test]
+    fn quality_report_aggregates_kpis() {
+        // One clean quote beat + one stripped-ref action-only beat.
+        let prose = AssembledProse::assemble(
+            &narrative(vec![
+                (CHARACTER_A, "她俯身。", &["emotion.sorrow"]),
+                (CHARACTER_A, "她继续。", &["emotion.fabricated"]),
+            ]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &["emotion.sorrow"])],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.stripped_refs, 1);
+        assert_eq!(prose.action_only_beats, 1);
+        assert_eq!(prose.unverified_quotes, 0);
+        // 2 accepted beats, 1 action-only → rate 0.5
+        assert!((prose.quality.action_only_rate - 0.5).abs() < 1e-9);
+        // 2 refs seen, 1 stripped → rate 0.5
+        assert!((prose.quality.stripped_ref_rate - 0.5).abs() < 1e-9);
+        assert!((prose.quality.quote_density - prose.quote_density()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn low_quote_density_flag_when_sparse() {
+        let prose = AssembledProse::assemble(
+            &narrative(vec![(CHARACTER_A, "她转身离开。", &[])]),
+            &sample_vocab(),
+            &[derivation(CHARACTER_A, &[])],
+            &participants(&[CHARACTER_A]),
+        )
+        .unwrap();
+        assert_eq!(prose.quote_chars, 0);
+        assert!(prose.quality.low_quote_density);
+        assert!(prose.quote_density() < MIN_QUOTE_DENSITY);
     }
 }

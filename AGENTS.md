@@ -4,8 +4,8 @@
 
 - This is one Rust 2024 binary crate, not a workspace. The only application entrypoint is `src/main.rs`.
   （这是一个独立的 Rust 2024 二进制 crate，不是工作空间。唯一的应用入口是 `src/main.rs`。）
-- `rig-lancedb` is declared but not used yet. Do not infer a vector-store architecture from the dependency alone.
-  （`rig-lancedb` 已声明但尚未使用。不要仅从依赖推断出向量存储架构。）
+- `rig-lancedb` is **not** a direct `Cargo.toml` dependency today. Do not infer a vector-store architecture from transitive lockfile noise or dependency history.
+  （`rig-lancedb` 当前并非 `Cargo.toml` 直接依赖。不要从传递性 lock 噪声或依赖历史推断出向量存储架构。）
 
 ## Commands（命令）
 
@@ -16,6 +16,7 @@
 - Run the current agent（运行当前 agent）: Set `DEEPSEEK_API_KEY` in `.env` or shell, then run `cargo run`.
 - No test targets exist yet; focused tests use Cargo's normal filter form: `cargo test <test-name>`.
   （暂无测试目标；针对性的测试使用 Cargo 的标准过滤方式。）
+- Stack A process specs: docs/superpowers/specs/
 
 ## Runtime Wiring（运行时依赖）
 
@@ -38,16 +39,20 @@
 
 - Default runtime: load `assets/vocab.yaml` then merge `assets/distilled/` if present.
   （默认运行时：加载 base 词库，若存在则合并 `assets/distilled/`。）
+- Distilled YAML is **sense-nested**: an entry sits under its sense key (e.g. under `visual:` with key `hlm-c001-01`) and yields runtime `VocabularyId` `visual.hlm-c001-01`. No flat id-list rewrite is required.
+  （蒸馏 YAML 按感官嵌套：键在感官类别下，运行时拼成 `sense.key`，无需改写为扁平 id。）
 - Skip distilled merge: `NOVELS_SKIP_DISTILLED=1` (or `true`).
   （跳过蒸馏合并：`NOVELS_SKIP_DISTILLED=1`。）
 - Override distilled dir: `NOVELS_DISTILLED_DIR=path` (must be an existing directory).
   （覆盖蒸馏目录：`NOVELS_DISTILLED_DIR=path`，须为已存在目录。）
 - Candidate caps: 24 per sense / 96 total; tags sent to LLM capped at 80.
   （候选硬顶：每感官类最多 24、总计最多 96；进入 LLM 的 tags 最多 80。）
-- Ranking (P0 anti-AI): `candidates_ranked_limited` scores by selected tags + lexical overlap with character name / scene event / tags (not pure dictionary order). Plan: `docs/superpowers/plans/2026-07-22-anti-ai-retrieve-action-p0.md`.
-  （排序：按标签命中 + 角色名/场景/query 词面重叠打分，非纯字典序截断。）
-- Free-text guard (`text_guard`): causal-filler strip + length caps for **action** (80), **memory** (120), **plot reason** (60); `quote_density()` on assemble.
-  （自由文本护栏：action/记忆/情节 reason 剥套话并限长；拼装输出 quote density。）
+- Ranking (anti-AI retrieve): `candidates_ranked_limited` uses **BM25** over candidate `text`+tags (zero-dependency CJK overlapping bigrams + atomic multi-char query terms + token-bag TF/IDF, k1=1.2/b=0.75; `dl`=token-bag length) plus selected-tag and exact name-tag voice boosts; deterministic score DESC → SENSES → id. Plan: P0 `docs/superpowers/plans/2026-07-22-anti-ai-retrieve-action-p0.md`; BM25+provenance follow-up in research §5a. Spec: `docs/superpowers/specs/2026-07-25-p2-bm25-cjk.md`.
+  （排序：候选池零依赖 BM25（CJK bigram + 原子多字查询词 + token-bag TF/IDF）+ 标签/声口加权，非纯字典序或布尔包含。）
+- Free-text guard (`text_guard`): causal-filler strip + length caps for **action** (80), **memory** (120), **plot reason** (60).
+  （自由文本护栏：action/记忆/情节 reason 剥套话并限长。）
+- Assemble verify: `AssembledProse` post-checks each injected quote appears in final `text` (`unverified_quotes`); `ProseQualityReport` aggregates quote_density / action_only_rate / stripped_ref_rate / low_quote_density (`MIN_QUOTE_DENSITY=0.30`). These are **observational telemetry, not gates** - assemble never hard-fails on `low_quote_density` (mock/action-only flows may sit below it).
+  （装配后回源重扫 + 质量报告；KPI 为可观测遥测，非硬门禁，低 density 不报错。）
 - Tag shortlist: `known_tags_ranked_limited` ranks by scene/character query before cap 80; candidate score boosts exact name tags (voice isolation).
   （tag 短名单按场景/角色相关排序；候选对角色名 tag 强加权以减轻声口串味。）
 - Quality report: `python tools/distill_quality_report.py`
@@ -80,7 +85,7 @@ src/
 │   ├── memory_source.rs # MemorySource / Certainty 枚举
 │   ├── plot.rs     # PlotDevelopment / PlotDevelopmentKind
 │   ├── scene.rs    # Scene / CreateScene
-│   └── sensation.rs # SensorySelection（五感）
+│   └── sensation.rs # SensorySelection（8 维描写：五感 + emotion/gesture/atmosphere）
 ├── db/             # 数据库层（SQLite + Repository 模式）
 │   ├── mod.rs      # Db 句柄 + 工厂方法
 │   ├── schema.rs   # DDL + migrate()
@@ -201,7 +206,8 @@ visual:                    # 感官类别
     tags: ["injury"]       # 标签（用于过滤）
 ```
 
-Five categories (五类): visual, auditory, olfactory, tactile, gustatory.
+Description dimensions (8 total): `visual`, `auditory`, `olfactory`, `tactile`, `gustatory` (base senses) plus `emotion`, `gesture`, `atmosphere` (runtime/distilled). Base `assets/vocab.yaml` ships the five senses; distilled YAML may add the remaining three. `SENSES` in `src/vocab/loader.rs` is the canonical 8-element list.
+（描写维度共 8 类：五感 + 情绪/神态/氛围。`assets/vocab.yaml` 仅含五感，蒸馏词库可补齐其余三类。）
 
 ## Test Strategy（测试策略）
 
@@ -212,8 +218,8 @@ Five categories (五类): visual, auditory, olfactory, tactile, gustatory.
 
 ## Known Baseline Issues（已知基线问题）
 
-- `cargo check --all-targets` / `cargo test --all-targets` fail in Lance 7.0.0 dependency build scripts on Windows before compiling this crate. Do not attribute that failure to a new change without comparing the error. If `rig-lancedb` is removed, builds may work.
-  （Windows 上编译 Lance 7.0.0 依赖时构建脚本会失败。去除 rig-lancedb 依赖后可解决。）
+- `rig-lancedb` is **not** a current direct dependency, so the historical Lance 7.0.0 build-script failure no longer applies: `cargo check --all-targets` and `cargo test` compile this crate without Lance. If a future change re-adds a lance feature, expect the Windows build-script failure to return and require `protoc`.
+  （`rig-lancedb` 当前非直接依赖，历史 Lance 7.0.0 构建脚本失败不再出现。若重新引入 lance 功能，需 `protoc` 并可能复现该失败。）
 - Repository has no commits yet; all current project files are untracked. Treat existing files as user work and avoid cleanup/reversion.
   （仓库还没有任何提交；所有当前项目文件都是未跟踪状态。）
 - `.env` is gitignored but still risky. Never commit secrets.
@@ -221,10 +227,8 @@ Five categories (五类): visual, auditory, olfactory, tactile, gustatory.
 
 ## Environment Setup（Windows 环境）
 
-- `protoc` required for lance-* crates. Install at `C:\Tools\protoc\bin\protoc.exe`, set `$env:PROTOC = "C:\Tools\protoc\bin\protoc.exe"`.
-  （lance 相关 crate 需要 protoc。安装到指定路径并设置环境变量。）
-- If not using lancedb features, removing `rig-lancedb` from Cargo.toml eliminates the protoc requirement.
-  （如不使用 lance 功能，移除 rig-lancedb 依赖可避免 protoc 要求。）
+- `protoc` is **not** required for the current dependency set (no `rig-lancedb` / lance-* crates). It is only needed if a lance feature is re-added; then install `C:\Tools\protoc\bin\protoc.exe` and set `$env:PROTOC = "C:\Tools\protoc\bin\protoc.exe"`.
+  （当前依赖无 lance，无需 protoc。仅当重新引入 lance 功能时才需要安装并设置 protoc。）
 
 ## AI Maintenance Playbook（AI 维护手册）
 
@@ -297,7 +301,7 @@ Owns: `src/llm/contract.rs`, `src/llm/generator.rs`, `src/llm/rig_impl.rs`, `src
 
 Owns: `assets/vocab.yaml`, `src/vocab/bootstrap.rs`, `src/vocab/loader.rs`, `src/vocab/validate.rs`, and `src/vocab/mod.rs`.
 
-- Base vocabulary contains five categories: `visual`, `auditory`, `olfactory`, `tactile`, and `gustatory`.
+- Base vocabulary contains five sensory categories: `visual`, `auditory`, `olfactory`, `tactile`, and `gustatory`. Runtime `SensorySelection` / `SENSES` support **8 description dimensions** (the five senses plus `emotion`, `gesture`, `atmosphere`); distilled YAML may supply the extra three.
 - A vocabulary entry is keyed as `<sense>.<key>` and contains display `text` plus `tags`.
 - Runtime load path is `load_runtime_vocab(base, distilled_dir?)` in `bootstrap.rs`: base YAML, optional merge of a distilled directory.
 - Keep YAML loading and candidate generation in `loader.rs`; keep LLM output filtering in `validate.rs`.
@@ -357,7 +361,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 - Repository or schema changes: run matching `tests/db_test.rs` filter, then full tests when practical.
 - Service or LLM-flow changes: run matching `tests/scene_test.rs` or `tests/e2e.rs` filter, then full tests when practical.
 - Documentation-only changes: run `cargo fmt --all -- --check` and inspect Markdown headings and commands; no behavior test is required.
-- On Windows, Lance 7.0.0 build-script failure can occur before this crate compiles. Compare failure output with the known baseline before attributing it to a change. `protoc` is expected at `C:\Tools\protoc\bin\protoc.exe` when Lance dependencies are built.
+- On Windows, the historical Lance 7.0.0 build-script failure no longer occurs because `rig-lancedb` is not a current dependency. If a lance feature is re-added, set `$env:PROTOC = "C:\Tools\protoc\bin\protoc.exe"` and compare any failure with the known Lance baseline before attributing it to a new change.
 
 ### Data and Safety Rules（数据与安全规则）
 
@@ -386,4 +390,4 @@ Before completing a task, verify:
 - Optional local corpus or distillation paths absent: expected on a clean checkout. If present as untracked user assets, do not edit or run them without explicit instruction.
 - Invalid or empty LLM sensory output: inspect vocabulary IDs and `validate_selection()` behavior before changing retry or persistence code.
 - Database consistency concern: inspect `src/db/derivation_repo.rs`; do not add independent sensation and memory writes around the existing transaction.
-- Windows build fails in Lance tooling before crate compilation: verify `$env:PROTOC` points to `C:\Tools\protoc\bin\protoc.exe`, then compare the failure with the known baseline before editing application code.
+- Windows build no longer fails in Lance tooling because `rig-lancedb` is not a current dependency. If a lance feature is re-added, verify `$env:PROTOC` points to `C:\Tools\protoc\bin\protoc.exe`, then compare the failure with the historical Lance baseline before editing application code.

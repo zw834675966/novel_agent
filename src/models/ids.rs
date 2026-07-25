@@ -6,14 +6,17 @@ use uuid::Uuid;
 /// ==========================
 /// 类型安全的角色标识，避免与 SceneId/MemoryId 混淆。
 /// 派生 Copy 以支持在集合中按值传递。
+/// 业务上用于主键和外键绑定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CharacterId(pub Uuid);
 
 /// 场景 ID（UUID newtype）
+/// 对应场景发生的时间点与参与者聚合，避免与角色/记忆 ID 混淆。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SceneId(pub Uuid);
 
 /// 记忆 ID（UUID newtype）
+/// 用于 character_memories 主键，避免与其他实体 ID 混淆。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MemoryId(pub Uuid);
 

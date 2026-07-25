@@ -74,7 +74,7 @@ impl SequenceGenerator {
 impl SenseGenerator for OneFailureGenerator {
     async fn derive(&self, req: &DerivationRequest) -> Result<LlmCharacterDerivation, StoryError> {
         if req.character.id == self.failing_character {
-            Err(StoryError::Llm("configured participant failure".into()))
+            Err(StoryError::llm("configured participant failure"))
         } else {
             Ok(canned_derivation())
         }
@@ -95,7 +95,7 @@ impl SenseGenerator for SequenceGenerator {
             .lock()
             .await
             .pop_front()
-            .ok_or_else(|| StoryError::Llm("no response configured".into()))
+            .ok_or_else(|| StoryError::llm("no response configured"))
     }
 
     async fn select_context_tags(
@@ -114,7 +114,7 @@ impl SenseGenerator for RecordingGenerator {
             .lock()
             .await
             .pop_front()
-            .ok_or_else(|| StoryError::Llm("no derivation response configured".into()))
+            .ok_or_else(|| StoryError::llm("no derivation response configured"))
     }
 
     async fn select_context_tags(
@@ -126,7 +126,7 @@ impl SenseGenerator for RecordingGenerator {
             .lock()
             .await
             .pop_front()
-            .ok_or_else(|| StoryError::Llm("no context-tag response configured".into()))
+            .ok_or_else(|| StoryError::llm("no context-tag response configured"))
     }
 }
 
@@ -244,7 +244,7 @@ async fn derive_scene_returns_partial_on_one_failure() {
     );
     assert!(results
         .iter()
-        .any(|result| matches!(result, Err(StoryError::Llm(message)) if message == "configured participant failure")));
+        .any(|result| matches!(result, Err(StoryError::Llm { message, .. }) if message == "configured participant failure")));
 }
 
 #[tokio::test]

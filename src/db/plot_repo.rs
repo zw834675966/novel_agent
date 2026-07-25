@@ -60,7 +60,9 @@ impl PlotRepo {
             let reason: String = sqlx::Row::try_get(&r, "reason")?;
             let created_at_str: String = sqlx::Row::try_get(&r, "created_at")?;
 
-            let id = Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?;
+            // Validate UUID format (id is not stored in StoredPlotDevelopment,
+            // but parsing verifies storage integrity).
+            Uuid::parse_str(&id_str).map_err(|e| StoryError::Database(e.to_string()))?;
             let cid = Uuid::parse_str(&character_id_str)
                 .map_err(|e| StoryError::Database(e.to_string()))?;
             let sid =
@@ -77,8 +79,6 @@ impl PlotRepo {
                 development: PlotDevelopment { kind, reason },
                 created_at,
             });
-            // id 目前未直接暴露在 StoredPlotDevelopment；保留解析以验证存储完整性。
-            let _ = id;
         }
         Ok(out)
     }

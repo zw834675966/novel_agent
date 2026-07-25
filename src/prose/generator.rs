@@ -1,18 +1,8 @@
-use crate::models::{Character, CharacterDerivation, CharacterId, Scene, StoryError};
+use crate::models::{
+    Character, CharacterDerivation, CharacterId, Scene, StoryError, VocabularyCandidate,
+};
 
 use super::contract::LlmNarrative;
-
-/// 候选描写片段(语义版,携带 sense/text/tags)
-/// ============================================
-/// 与 `VocabularyCandidate` 同构,但归属 prose 模块。
-/// LLM 通过引用 `id` 字段(`"<sense>.<key>"`)拉取原著原文。
-#[derive(Debug, Clone)]
-pub struct ProseCandidate {
-    pub id: String,
-    pub sense: String,
-    pub text: String,
-    pub tags: Vec<String>,
-}
 
 /// 单个角色的全部候选片段
 /// ========================
@@ -21,7 +11,7 @@ pub struct ProseCandidate {
 #[derive(Debug, Clone)]
 pub struct CharacterProseCandidates {
     pub character_id: CharacterId,
-    pub candidates: Vec<ProseCandidate>,
+    pub candidates: Vec<VocabularyCandidate>,
 }
 
 /// 叙事编排请求(语义版)

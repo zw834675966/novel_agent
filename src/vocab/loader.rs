@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
 
-use crate::llm::VocabularyCandidate;
+use crate::models::VocabularyCandidate;
 
 /// 词库条目
 /// ============
@@ -40,6 +40,38 @@ pub struct VocabFile {
     pub atmosphere: HashMap<String, VocabEntry>, // 氛围环境
 }
 
+impl VocabFile {
+    /// 返回 8 个感官 HashMap 的 `(sense_name, &map)` 数组，用于统一迭代。
+    pub(crate) fn sense_maps(&self) -> [(&'static str, &HashMap<String, VocabEntry>); 8] {
+        [
+            ("visual", &self.visual),
+            ("auditory", &self.auditory),
+            ("olfactory", &self.olfactory),
+            ("tactile", &self.tactile),
+            ("gustatory", &self.gustatory),
+            ("emotion", &self.emotion),
+            ("gesture", &self.gesture),
+            ("atmosphere", &self.atmosphere),
+        ]
+    }
+
+    /// 返回 8 个感官 HashMap 的可变引用数组，用于统一写入。
+    pub(crate) fn sense_maps_mut(
+        &mut self,
+    ) -> [(&'static str, &mut HashMap<String, VocabEntry>); 8] {
+        [
+            ("visual", &mut self.visual),
+            ("auditory", &mut self.auditory),
+            ("olfactory", &mut self.olfactory),
+            ("tactile", &mut self.tactile),
+            ("gustatory", &mut self.gustatory),
+            ("emotion", &mut self.emotion),
+            ("gesture", &mut self.gesture),
+            ("atmosphere", &mut self.atmosphere),
+        ]
+    }
+}
+
 /// 全部感官/描写类别(候选集与校验共用同一份定义,防止遗漏)
 pub const SENSES: [&str; 8] = [
     "visual",
@@ -59,12 +91,180 @@ pub const DEFAULT_TOTAL_CAP: usize = 96;
 /// 传给 LLM 的 known tags 上限
 pub const DEFAULT_TAG_CAP: usize = 80;
 
+/// Position of `sense` in SENSES, or `usize::MAX` if unknown.
+/// Replaces 6 inline copies of `SENSES.iter().position(...).unwrap_or(usize::MAX)`.
+pub(crate) fn sense_order(sense: &str) -> usize {
+    SENSES
+        .iter()
+        .position(|s| *s == sense)
+        .unwrap_or(usize::MAX)
+}
+
 /// 词库（已加载状态）
 /// =====================
 /// 提供按感官类别查询、按标签过滤、生成候选集等功能。
 #[derive(Debug, Clone)]
 pub struct Vocab {
     pub file: VocabFile,
+}
+
+/// BM25 scores for a candidate pool (zero-dependency IR ranking).
+///
+/// Documents are token bags: each candidate's `text` is tokenized (overlapping
+/// CJK bigrams + lowercased ASCII/alnum words) and each tag is added both as an
+/// exact token and tokenized. Query terms are expanded to keep multi-char names
+/// like 「宝玉」 atomic (whole term when ≥2 chars) plus their tokenized sub-tokens,
+/// so partial CJK overlap via shared bigrams can still score. TF = multiset count
+/// of a token in the doc bag; doc length `dl` = bag token count.
+struct Bm25Scores {
+    /// candidate id -> BM25 score (0 if missing / empty query)
+    scores: HashMap<String, f64>,
+}
+
+impl Bm25Scores {
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
+
+    fn build(candidates: &[VocabularyCandidate], query_terms: &[String]) -> Self {
+        let expanded = expand_query(query_terms);
+        if expanded.is_empty() || candidates.is_empty() {
+            return Self {
+                scores: HashMap::new(),
+            };
+        }
+
+        let n = candidates.len() as f64;
+        let bags: Vec<HashMap<String, usize>> = candidates.iter().map(doc_bag_counts).collect();
+        let lens: Vec<f64> = bags
+            .iter()
+            .map(|b| b.values().sum::<usize>() as f64)
+            .collect();
+        let avgdl = (lens.iter().sum::<f64>() / n).max(1e-9);
+
+        let dfs: Vec<usize> = expanded
+            .iter()
+            .map(|term| bags.iter().filter(|b| b.contains_key(term)).count())
+            .collect();
+        let idfs: Vec<f64> = dfs
+            .iter()
+            .map(|&df| {
+                let df = df as f64;
+                ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+            })
+            .collect();
+
+        let mut scores = HashMap::with_capacity(candidates.len());
+        for (di, c) in candidates.iter().enumerate() {
+            let mut s = 0.0_f64;
+            let dl = lens[di];
+            let bag = &bags[di];
+            for (i, term) in expanded.iter().enumerate() {
+                let tf = *bag.get(term).unwrap_or(&0) as f64;
+                if tf <= 0.0 {
+                    continue;
+                }
+                let denom = tf + Self::K1 * (1.0 - Self::B + Self::B * dl / avgdl);
+                s += idfs[i] * (tf * (Self::K1 + 1.0)) / denom;
+            }
+            scores.insert(c.id.clone(), s);
+        }
+        Self { scores }
+    }
+
+    fn get(&self, id: &str) -> f64 {
+        self.scores.get(id).copied().unwrap_or(0.0)
+    }
+}
+
+/// Expand query terms: keep each trimmed term whole when ≥2 chars (atomic names
+/// like 「宝玉」), then append its tokenized sub-tokens. Dedup preserving order.
+fn expand_query(query_terms: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for q in query_terms {
+        let qt = q.trim();
+        if qt.is_empty() {
+            continue;
+        }
+        if qt.chars().count() >= 2 && seen.insert(qt.to_string()) {
+            out.push(qt.to_string());
+        }
+        for tok in tokenize_for_bm25(qt) {
+            if seen.insert(tok.clone()) {
+                out.push(tok);
+            }
+        }
+    }
+    out
+}
+
+/// Multiset token bag for a candidate: tokenized `text` + each tag as an exact
+/// token + tokenized tag. Returns token -> occurrence count.
+fn doc_bag_counts(c: &VocabularyCandidate) -> HashMap<String, usize> {
+    let mut bag: HashMap<String, usize> = HashMap::new();
+    for tok in tokenize_for_bm25(&c.text) {
+        *bag.entry(tok).or_insert(0) += 1;
+    }
+    for tag in &c.tags {
+        *bag.entry(tag.clone()).or_insert(0) += 1;
+        for tok in tokenize_for_bm25(tag) {
+            *bag.entry(tok).or_insert(0) += 1;
+        }
+    }
+    bag
+}
+
+/// Zero-dependency BM25 tokenizer.
+///
+/// - CJK continuous runs (≥2 chars) -> overlapping bigrams; a lone CJK char -> unigram.
+/// - ASCII alphanumeric runs -> one lowercased word.
+/// - Everything else separates runs.
+pub(crate) fn tokenize_for_bm25(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_cjk(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_cjk(chars[i]) {
+                i += 1;
+            }
+            let run: String = chars[start..i].iter().collect();
+            let rcs: Vec<char> = run.chars().collect();
+            if rcs.len() == 1 {
+                tokens.push(run);
+            } else {
+                for w in rcs.windows(2) {
+                    tokens.push(format!("{}{}", w[0], w[1]));
+                }
+            }
+        } else if chars[i].is_ascii_alphanumeric() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_alphanumeric() {
+                i += 1;
+            }
+            tokens.push(
+                chars[start..i]
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_lowercase(),
+            );
+        } else {
+            i += 1;
+        }
+    }
+    tokens
+}
+
+/// True for CJK ideograph ranges (zero-dep range check; no unicode crate).
+fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{4E00}'..='\u{9FFF}'
+        | '\u{3400}'..='\u{4DBF}'
+        | '\u{F900}'..='\u{FAFF}'
+        | '\u{20000}'..='\u{2A6DF}'
+        | '\u{2A700}'..='\u{2CEAF}'
+    )
 }
 
 impl Vocab {
@@ -84,17 +284,11 @@ impl Vocab {
 
     /// 获取某感官类别的所有条目（返回引用，不拷贝）
     pub fn entries(&self, sense: &str) -> Option<&HashMap<String, VocabEntry>> {
-        match sense {
-            "visual" => Some(&self.file.visual),
-            "auditory" => Some(&self.file.auditory),
-            "olfactory" => Some(&self.file.olfactory),
-            "tactile" => Some(&self.file.tactile),
-            "gustatory" => Some(&self.file.gustatory),
-            "emotion" => Some(&self.file.emotion),
-            "gesture" => Some(&self.file.gesture),
-            "atmosphere" => Some(&self.file.atmosphere),
-            _ => None,
-        }
+        self.file
+            .sense_maps()
+            .into_iter()
+            .find(|(s, _)| *s == sense)
+            .map(|(_, m)| m)
     }
 
     /// 检查某个 sense.key 是否存在
@@ -102,44 +296,6 @@ impl Vocab {
         self.entries(sense)
             .map(|m| m.contains_key(key))
             .unwrap_or(false)
-    }
-
-    /// 按感官类别和标签过滤，返回匹配的 VocabularyId 列表
-    ///
-    /// # 参数
-    /// - `sense` — 五感类别名称
-    /// - `tags`  — 目标标签（指定标签时只返回同时匹配的条目；为空时返回全部）
-    ///
-    /// # 返回
-    /// 格式如 ["visual.bloodstain", "visual.candlelight"]
-    pub fn candidates(&self, sense: &str, tags: &[&str]) -> Vec<crate::models::VocabularyId> {
-        let Some(map) = self.entries(sense) else {
-            return vec![];
-        };
-        map.iter()
-            .filter_map(|(k, e)| {
-                if tags.is_empty() || tags.iter().any(|t| e.tags.iter().any(|et| et == t)) {
-                    crate::models::VocabularyId::new(&format!("{sense}.{k}")).ok()
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// 生成全感官候选集（HashSet<String>，用于快速校验 LLM 输出）
-    ///
-    /// # 用途
-    /// 将结果传给 VocabularyId::new() 的 validate 函数，
-    /// 检查 LLM 输出的每个 ID 是否在候选集中。
-    pub fn candidate_set(&self, tags: &[&str]) -> std::collections::HashSet<String> {
-        let mut set = std::collections::HashSet::new();
-        for sense in SENSES {
-            for id in self.candidates(sense, tags) {
-                set.insert(id.as_str().to_string());
-            }
-        }
-        set
     }
 
     /// Returns every vocabulary tag in stable order.
@@ -178,13 +334,8 @@ impl Vocab {
         }
     }
 
-    /// Returns known tags truncated to `max` (stable order from [`Self::known_tags`]).
-    pub fn known_tags_limited(&self, max: usize) -> Vec<String> {
-        self.known_tags_ranked_limited(&[], max)
-    }
-
     /// Score a vocabulary tag for shortlist relevance (higher is better).
-    pub fn score_tag(tag: &str, query_terms: &[String]) -> i64 {
+    pub(crate) fn score_tag(tag: &str, query_terms: &[String]) -> i64 {
         let mut score: i64 = 0;
         for q in query_terms {
             let q = q.trim();
@@ -215,25 +366,13 @@ impl Vocab {
         tags
     }
 
-    /// Like [`Self::candidates_for_tags`], then applies per-sense and total caps.
-    ///
-    /// When `query_terms` is empty, ranking is score-0 with id order (stable).
-    /// Prefer [`Self::candidates_ranked_limited`] when scene/character context exists.
-    pub fn candidates_for_tags_limited(
-        &self,
-        selected: &[String],
-        per_sense: usize,
-        total_max: usize,
-    ) -> Vec<VocabularyCandidate> {
-        self.candidates_ranked_limited(selected, &[], per_sense, total_max)
-    }
-
-    /// Lexical score for scene/character-aware ranking (critique P0/P1).
+    /// Selected-tag hits + exact name/tag voice isolation (critique P0/P1).
     /// Higher is better. Pure function; deterministic.
     ///
-    /// Voice isolation: exact tag == query term (e.g. character name) gets a large boost
-    /// so other characters' fragments rank lower when name is in query_terms.
-    pub fn score_candidate(
+    /// Text/substring relevance is scored by BM25 in [`Self::candidates_ranked_limited`];
+    /// this function only adds discrete boosts that BM25 should not replace
+    /// (selected-tag preference + exact character-name tag isolation).
+    pub(crate) fn score_candidate(
         c: &VocabularyCandidate,
         selected: &[String],
         query_terms: &[String],
@@ -250,24 +389,32 @@ impl Vocab {
                 continue;
             }
             let weight = (q.chars().count() as i64).clamp(1, 8);
-            // Exact character-name / term on tag → strong voice boost (P1).
+            // Exact character-name / term on tag -> strong voice boost (P1).
             if c.tags.iter().any(|t| t == q) {
                 score += 40 * weight;
-            } else if c
-                .tags
-                .iter()
-                .any(|t| t.contains(q) || q.contains(t.as_str()))
-            {
-                score += 12 * weight;
-            }
-            if c.text.contains(q) {
-                score += 8 * weight;
             }
         }
         score
     }
 
-    /// Rank by [`Self::score_candidate`] (DESC) then id (ASC), then apply caps.
+    /// BM25 base (×1000, rounded) + [`Self::score_candidate`] boosts.
+    /// Used by ranked selection; exposed for tests.
+    pub(crate) fn score_candidate_with_bm25(
+        c: &VocabularyCandidate,
+        selected: &[String],
+        query_terms: &[String],
+        bm25: f64,
+    ) -> i64 {
+        let base = (bm25 * 1000.0).round() as i64;
+        base + Self::score_candidate(c, selected, query_terms)
+    }
+
+    /// Rank by BM25 + voice/selected boosts (DESC), then SENSES order + id (ASC); apply caps.
+    ///
+    /// Builds a zero-dependency BM25 index over the candidate pool (token bags of
+    /// text + tags; CJK bigrams + atomic multi-char query terms). Empty
+    /// `query_terms` -> BM25=0, order falls back to selected-tag boosts then
+    /// stable sense/id order.
     pub fn candidates_ranked_limited(
         &self,
         selected: &[String],
@@ -276,19 +423,14 @@ impl Vocab {
         total_max: usize,
     ) -> Vec<VocabularyCandidate> {
         let mut all = self.candidates_for_tags(selected);
+        let bm25 = Bm25Scores::build(&all, query_terms);
         all.sort_by(|a, b| {
-            let sa = Self::score_candidate(a, selected, query_terms);
-            let sb = Self::score_candidate(b, selected, query_terms);
+            let sa = Self::score_candidate_with_bm25(a, selected, query_terms, bm25.get(&a.id));
+            let sb = Self::score_candidate_with_bm25(b, selected, query_terms, bm25.get(&b.id));
             // Score DESC; ties break by SENSES order then id (stable with prior dict-cap tests).
             sb.cmp(&sa).then_with(|| {
-                let ia = SENSES
-                    .iter()
-                    .position(|s| *s == a.sense)
-                    .unwrap_or(usize::MAX);
-                let ib = SENSES
-                    .iter()
-                    .position(|s| *s == b.sense)
-                    .unwrap_or(usize::MAX);
+                let ia = sense_order(&a.sense);
+                let ib = sense_order(&b.sense);
                 ia.cmp(&ib).then_with(|| a.id.cmp(&b.id))
             })
         });
@@ -337,15 +479,15 @@ impl Vocab {
     }
 
     /// 合并另一份词库(蒸馏素材库叠加到手写基础词库上;键冲突时以 other 为准)
-    pub fn merge(&mut self, other: Vocab) {
-        self.file.visual.extend(other.file.visual);
-        self.file.auditory.extend(other.file.auditory);
-        self.file.olfactory.extend(other.file.olfactory);
-        self.file.tactile.extend(other.file.tactile);
-        self.file.gustatory.extend(other.file.gustatory);
-        self.file.emotion.extend(other.file.emotion);
-        self.file.gesture.extend(other.file.gesture);
-        self.file.atmosphere.extend(other.file.atmosphere);
+    pub fn merge(&mut self, mut other: Vocab) {
+        for ((_, dst), (_, src)) in self
+            .file
+            .sense_maps_mut()
+            .into_iter()
+            .zip(other.file.sense_maps_mut())
+        {
+            dst.extend(std::mem::take(src));
+        }
     }
 
     /// 从目录加载所有 *.yaml 并合并(用于 assets/distilled/ 素材库)
@@ -366,5 +508,37 @@ impl Vocab {
             n += 1;
         }
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tokenize_for_bm25;
+
+    #[test]
+    fn tokenize_emits_atomic_and_bigrams() {
+        // 2-char CJK run -> single bigram equal to the whole (atomic name).
+        let t = tokenize_for_bm25("宝玉");
+        assert!(t.contains(&"宝玉".to_string()));
+
+        // 3-char CJK run -> overlapping bigrams only.
+        let t = tokenize_for_bm25("紫菱洲");
+        assert!(t.contains(&"紫菱".to_string()));
+        assert!(t.contains(&"菱洲".to_string()));
+        assert!(!t.contains(&"紫菱洲".to_string()));
+
+        // Lone CJK char -> unigram.
+        assert_eq!(tokenize_for_bm25("雨"), vec!["雨".to_string()]);
+
+        // ASCII alnum run -> one lowercased word; whitespace/punct separates.
+        assert_eq!(
+            tokenize_for_bm25("Hello, World"),
+            vec!["hello".to_string(), "world".to_string()]
+        );
+
+        // Mixed CJK + Latin.
+        let t = tokenize_for_bm25("宝玉 hello");
+        assert!(t.contains(&"宝玉".to_string()));
+        assert!(t.contains(&"hello".to_string()));
     }
 }
