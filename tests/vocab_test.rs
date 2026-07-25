@@ -329,3 +329,27 @@ fn load_runtime_vocab_merges_base_and_distilled_fixture() {
     assert!(v.has("emotion", "hlm-c001-01") || report.distilled_files >= 1);
     assert!(report.total_entries > report.base_entries);
 }
+#[test]
+fn bm25_bigram_partial_match() {
+    // Bigrams give partial credit: query 「雨中人」 is a substring of 「雨中人影」
+    // (whole-term hit) but NOT of 「雨中独坐」. Yet 「雨中独坐」 shares the bigram 雨中
+    // with the query, so it must rank above the fully-unrelated 「完全无关」.
+    // Whole-term-only BM25 would tie 雨中独坐 with 完全无关 at 0.
+    let yaml = r#"
+visual:
+  full: { text: "雨中人影", tags: ["t"] }
+  partial: { text: "雨中独坐", tags: ["t"] }
+  none: { text: "完全无关", tags: ["t"] }
+"#;
+    let v = Vocab::load_from_str(yaml).unwrap();
+    let ranked = v.candidates_ranked_limited(&["t".into()], &["雨中人".into()], 3, 3);
+    let ids: Vec<_> = ranked.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids[0], "visual.full");
+    let partial_pos = ids.iter().position(|x| *x == "visual.partial").unwrap();
+    let none_pos = ids.iter().position(|x| *x == "visual.none").unwrap();
+    assert!(
+        partial_pos < none_pos,
+        "bigram partial match must rank partial above none: {:?}",
+        ids
+    );
+}

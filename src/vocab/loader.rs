@@ -110,9 +110,12 @@ pub struct Vocab {
 
 /// BM25 scores for a candidate pool (zero-dependency IR ranking).
 ///
-/// Documents = each candidate's `text` + tags. Query terms use **whole-term
-/// substring TF** (`text.matches(term).count()` + exact tag hit), not char-level
-/// tokenization, so multi-char names like 「宝玉」 stay atomic.
+/// Documents are token bags: each candidate's `text` is tokenized (overlapping
+/// CJK bigrams + lowercased ASCII/alnum words) and each tag is added both as an
+/// exact token and tokenized. Query terms are expanded to keep multi-char names
+/// like 「宝玉」 atomic (whole term when ≥2 chars) plus their tokenized sub-tokens,
+/// so partial CJK overlap via shared bigrams can still score. TF = multiset count
+/// of a token in the doc bag; doc length `dl` = bag token count.
 struct Bm25Scores {
     /// candidate id -> BM25 score (0 if missing / empty query)
     scores: HashMap<String, f64>,
@@ -123,29 +126,25 @@ impl Bm25Scores {
     const B: f64 = 0.75;
 
     fn build(candidates: &[VocabularyCandidate], query_terms: &[String]) -> Self {
-        let terms: Vec<&str> = query_terms
-            .iter()
-            .map(|q| q.trim())
-            .filter(|q| !q.is_empty())
-            .collect();
-        if terms.is_empty() || candidates.is_empty() {
+        let expanded = expand_query(query_terms);
+        if expanded.is_empty() || candidates.is_empty() {
             return Self {
                 scores: HashMap::new(),
             };
         }
 
         let n = candidates.len() as f64;
-        let lens: Vec<f64> = candidates.iter().map(bm25_doc_len).collect();
+        let bags: Vec<HashMap<String, usize>> = candidates.iter().map(doc_bag_counts).collect();
+        let lens: Vec<f64> = bags
+            .iter()
+            .map(|b| b.values().sum::<usize>() as f64)
+            .collect();
         let avgdl = (lens.iter().sum::<f64>() / n).max(1e-9);
 
-        let mut dfs = vec![0usize; terms.len()];
-        for c in candidates {
-            for (i, term) in terms.iter().enumerate() {
-                if bm25_term_tf(c, term) > 0.0 {
-                    dfs[i] += 1;
-                }
-            }
-        }
+        let dfs: Vec<usize> = expanded
+            .iter()
+            .map(|term| bags.iter().filter(|b| b.contains_key(term)).count())
+            .collect();
         let idfs: Vec<f64> = dfs
             .iter()
             .map(|&df| {
@@ -158,8 +157,9 @@ impl Bm25Scores {
         for (di, c) in candidates.iter().enumerate() {
             let mut s = 0.0_f64;
             let dl = lens[di];
-            for (i, term) in terms.iter().enumerate() {
-                let tf = bm25_term_tf(c, term);
+            let bag = &bags[di];
+            for (i, term) in expanded.iter().enumerate() {
+                let tf = *bag.get(term).unwrap_or(&0) as f64;
                 if tf <= 0.0 {
                     continue;
                 }
@@ -176,22 +176,95 @@ impl Bm25Scores {
     }
 }
 
-/// Document length proxy: chars in text + chars in tags.
-fn bm25_doc_len(c: &VocabularyCandidate) -> f64 {
-    let tag_chars: usize = c.tags.iter().map(|t| t.chars().count()).sum();
-    (c.text.chars().count() + tag_chars) as f64
+/// Expand query terms: keep each trimmed term whole when ≥2 chars (atomic names
+/// like 「宝玉」), then append its tokenized sub-tokens. Dedup preserving order.
+fn expand_query(query_terms: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for q in query_terms {
+        let qt = q.trim();
+        if qt.is_empty() {
+            continue;
+        }
+        if qt.chars().count() >= 2 && seen.insert(qt.to_string()) {
+            out.push(qt.to_string());
+        }
+        for tok in tokenize_for_bm25(qt) {
+            if seen.insert(tok.clone()) {
+                out.push(tok);
+            }
+        }
+    }
+    out
 }
 
-/// Whole-term TF: non-overlapping substring hits in text + 1 if any tag == term.
-fn bm25_term_tf(c: &VocabularyCandidate, term: &str) -> f64 {
-    if term.is_empty() {
-        return 0.0;
+/// Multiset token bag for a candidate: tokenized `text` + each tag as an exact
+/// token + tokenized tag. Returns token -> occurrence count.
+fn doc_bag_counts(c: &VocabularyCandidate) -> HashMap<String, usize> {
+    let mut bag: HashMap<String, usize> = HashMap::new();
+    for tok in tokenize_for_bm25(&c.text) {
+        *bag.entry(tok).or_insert(0) += 1;
     }
-    let mut tf = c.text.matches(term).count() as f64;
-    if c.tags.iter().any(|t| t == term) {
-        tf += 1.0;
+    for tag in &c.tags {
+        *bag.entry(tag.clone()).or_insert(0) += 1;
+        for tok in tokenize_for_bm25(tag) {
+            *bag.entry(tok).or_insert(0) += 1;
+        }
     }
-    tf
+    bag
+}
+
+/// Zero-dependency BM25 tokenizer.
+///
+/// - CJK continuous runs (≥2 chars) -> overlapping bigrams; a lone CJK char -> unigram.
+/// - ASCII alphanumeric runs -> one lowercased word.
+/// - Everything else separates runs.
+pub(crate) fn tokenize_for_bm25(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_cjk(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_cjk(chars[i]) {
+                i += 1;
+            }
+            let run: String = chars[start..i].iter().collect();
+            let rcs: Vec<char> = run.chars().collect();
+            if rcs.len() == 1 {
+                tokens.push(run);
+            } else {
+                for w in rcs.windows(2) {
+                    tokens.push(format!("{}{}", w[0], w[1]));
+                }
+            }
+        } else if chars[i].is_ascii_alphanumeric() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_alphanumeric() {
+                i += 1;
+            }
+            tokens.push(
+                chars[start..i]
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_lowercase(),
+            );
+        } else {
+            i += 1;
+        }
+    }
+    tokens
+}
+
+/// True for CJK ideograph ranges (zero-dep range check; no unicode crate).
+fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{4E00}'..='\u{9FFF}'
+        | '\u{3400}'..='\u{4DBF}'
+        | '\u{F900}'..='\u{FAFF}'
+        | '\u{20000}'..='\u{2A6DF}'
+        | '\u{2A700}'..='\u{2CEAF}'
+    )
 }
 
 impl Vocab {
@@ -338,9 +411,10 @@ impl Vocab {
 
     /// Rank by BM25 + voice/selected boosts (DESC), then SENSES order + id (ASC); apply caps.
     ///
-    /// Builds a zero-dependency BM25 index over the candidate pool (text + tags as docs,
-    /// whole-term substring TF). Empty `query_terms` -> BM25=0, order falls back to
-    /// selected-tag boosts then stable sense/id order.
+    /// Builds a zero-dependency BM25 index over the candidate pool (token bags of
+    /// text + tags; CJK bigrams + atomic multi-char query terms). Empty
+    /// `query_terms` -> BM25=0, order falls back to selected-tag boosts then
+    /// stable sense/id order.
     pub fn candidates_ranked_limited(
         &self,
         selected: &[String],
@@ -434,5 +508,37 @@ impl Vocab {
             n += 1;
         }
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tokenize_for_bm25;
+
+    #[test]
+    fn tokenize_emits_atomic_and_bigrams() {
+        // 2-char CJK run -> single bigram equal to the whole (atomic name).
+        let t = tokenize_for_bm25("宝玉");
+        assert!(t.contains(&"宝玉".to_string()));
+
+        // 3-char CJK run -> overlapping bigrams only.
+        let t = tokenize_for_bm25("紫菱洲");
+        assert!(t.contains(&"紫菱".to_string()));
+        assert!(t.contains(&"菱洲".to_string()));
+        assert!(!t.contains(&"紫菱洲".to_string()));
+
+        // Lone CJK char -> unigram.
+        assert_eq!(tokenize_for_bm25("雨"), vec!["雨".to_string()]);
+
+        // ASCII alnum run -> one lowercased word; whitespace/punct separates.
+        assert_eq!(
+            tokenize_for_bm25("Hello, World"),
+            vec!["hello".to_string(), "world".to_string()]
+        );
+
+        // Mixed CJK + Latin.
+        let t = tokenize_for_bm25("宝玉 hello");
+        assert!(t.contains(&"宝玉".to_string()));
+        assert!(t.contains(&"hello".to_string()));
     }
 }
